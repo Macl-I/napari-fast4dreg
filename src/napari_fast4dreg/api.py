@@ -171,21 +171,25 @@ def register_image(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Convert to dask array if numpy
+    # Validate shape early (before dask conversion)
     if isinstance(image, np.ndarray):
+        if image.ndim != 5:
+            raise ValueError(
+                f"Image must be 5D (CTZYX format), got shape {image.shape}. "
+                f"If your data has different dimensions, reshape it first."
+            )
         _progress("Converting to dask array...")
         # Chunk to keep full channels and time together, chunk spatially
         chunks = (1, 1, 'auto', 'auto', 'auto')
         data = da.from_array(image, chunks=chunks)
     else:
         data = image
-    
-    # Validate shape
-    if data.ndim != 5:
-        raise ValueError(
-            f"Image must be 5D (CTZYX format), got shape {data.shape}. "
-            f"If your data has different dimensions, reshape it first."
-        )
+        # Validate dask array shape
+        if data.ndim != 5:
+            raise ValueError(
+                f"Image must be 5D (CTZYX format), got shape {data.shape}. "
+                f"If your data has different dimensions, reshape it first."
+            )
     
     _progress(f"Input shape (CTZYX): {data.shape}")
     

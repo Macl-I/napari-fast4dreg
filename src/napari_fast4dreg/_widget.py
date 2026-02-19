@@ -50,7 +50,10 @@ class Fast4DRegWidget(Container):
     def __init__(self, napari_viewer: "napari.Viewer" = None):
         super().__init__(labels=False)
         
+        print(f"DEBUG: Fast4DRegWidget.__init__ called with napari_viewer = {napari_viewer}")
+        print(f"DEBUG: napari_viewer type = {type(napari_viewer)}")
         self.viewer = napari_viewer
+        print(f"DEBUG: self.viewer set to {self.viewer}")
         
         # Create widgets
         self.image_layer = create_widget(
@@ -200,6 +203,9 @@ class Fast4DRegWidget(Container):
         self.start_time = time.time()
         self.last_update_time = self.start_time
         
+        # Store output path for loading results later
+        self.current_output_path = Path(self.output_path.value)
+        
         # Get image data
         image = self.image_layer.value.data
         
@@ -254,6 +260,8 @@ class Fast4DRegWidget(Container):
     
     def _on_complete(self, result):
         """Handle completion."""
+        print(f"DEBUG: _on_complete called, self.viewer = {self.viewer}")
+        print(f"DEBUG: self.viewer type = {type(self.viewer)}")
         self.progress_bar.value = 100
         
         # Calculate and display total time
@@ -268,14 +276,26 @@ class Fast4DRegWidget(Container):
         self.status_label.value = f"✓ Registration complete! Total time: {time_str}"
         self.run_btn.enabled = True
         
-        # Add result to viewer if available
-        if result is not None and self.viewer is not None:
-            print(f"Adding registered image to napari viewer (shape: {result.shape})")
-            self.viewer.add_image(result, name="Registered")
-            print("✓ Registered image added to viewer")
-        elif result is None:
-            print("Warning: No result returned from registration")
-        elif self.viewer is None:
+        # Load registered image from saved Zarr file instead of using returned array
+        # This is more reliable for large images processed in worker thread
+        if self.viewer is not None:
+            try:
+                zarr_path = self.current_output_path / "registered.zarr"
+                if zarr_path.exists():
+                    print(f"Loading registered image from: {zarr_path}")
+                    # Load from zarr using dask for memory efficiency
+                    registered_data = da.from_zarr(str(zarr_path))
+                    # Compute to numpy for napari (napari handles dask arrays well too)
+                    print(f"Adding registered image to napari viewer (shape: {registered_data.shape})")
+                    self.viewer.add_image(registered_data, name="Registered")
+                    print("✓ Registered image added to viewer")
+                else:
+                    print(f"Warning: Registered file not found at {zarr_path}")
+            except Exception as e:
+                print(f"Error loading registered image: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
             print("Warning: No viewer available to display result")
     
     def _on_error(self, error):
@@ -589,8 +609,7 @@ class Fast4DRegWidget(Container):
             registered_data = registered_data[0, 0, ...]  # Remove C and T dimensions
         elif len(original_shape) == 4:
             if axes_enum == Axes.TZYX:
-                registered_data = registered_data[0, ...]  # Remove C dimension
-                registered_data = registered_data.swapaxes(0, 1)  # Restore T to first
+                registered_data = registered_data[0, ...]  # Remove C dimension -> (T, Z, Y, X)
             elif axes_enum in [Axes.ZCYX, Axes.CZYX]:
                 registered_data = registered_data[:, 0, ...]  # Remove T dimension if it was added
         
@@ -625,12 +644,28 @@ class Fast4DRegWidget(Container):
         
         yield (total_steps, total_steps, f"Registration complete! Total time: {time_str}")
         
-        return registered_data
+        # Return metadata instead of large array to avoid thread communication issues
+        return {
+            'success': True,
+            'output_path': str(zarr_path),
+            'output_shape': registered_data.shape,
+            'input_shape': original_shape,
+            'elapsed_time': elapsed
+        }
 
 
 # Create widget instance function for napari
-def Fast4DReg_widget():
+def Fast4DReg_widget(napari_viewer=None):
     """Factory function to create Fast4DReg widget."""
-    return Fast4DRegWidget()
+    print(f"DEBUG: Fast4DReg_widget factory called with napari_viewer = {napari_viewer}")
+    print(f"DEBUG: napari_viewer type = {type(napari_viewer)}")
+    
+    # If viewer not passed, try to get current viewer
+    if napari_viewer is None:
+        import napari
+        napari_viewer = napari.current_viewer()
+        print(f"DEBUG: Retrieved current_viewer() = {napari_viewer}")
+    
+    return Fast4DRegWidget(napari_viewer)
 
 

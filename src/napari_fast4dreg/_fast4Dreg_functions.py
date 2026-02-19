@@ -261,6 +261,7 @@ def translate_z_stack(_image, _shift, transform_type='z'):
     # Applies transformations to the entire z-stack at once (3D transformation, not plane-by-plane)
     
     _image_out = []
+    _shift = - _shift  # Negate shift for correct direction
     
     for c, C in enumerate(_image):
         # C has shape (z, y, x) and is a dask array

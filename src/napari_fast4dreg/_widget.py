@@ -339,25 +339,20 @@ class Fast4DRegWidget(Container):
         # Handle different input shapes and convert to CTZYX
         if len(img.shape) == 3:  # ZYX
             data = img[np.newaxis, np.newaxis, ...]
-            ref_channel_int = 0
             single_channel_mode = True
         elif len(img.shape) == 4:
             if axes_enum == Axes.TZYX:
                 data = img[:, np.newaxis, ...]
                 data = data.swapaxes(0, 1)
-                ref_channel_int = 0
                 single_channel_mode = True
             elif axes_enum == Axes.ZCYX:
                 data = img[np.newaxis, ...]
                 data = data.swapaxes(0, 1).swapaxes(1, 2)
-                ref_channel_int = int(ref_channel)
             elif axes_enum == Axes.CZYX:
                 data = img[:, np.newaxis, ...]
-                ref_channel_int = int(ref_channel)
             else:
                 data = img[:, np.newaxis, ...]
                 data = data.swapaxes(0, 1)
-                ref_channel_int = 0
                 single_channel_mode = True
         elif len(img.shape) == 5:
             if axes_enum == Axes.CTZYX:
@@ -369,10 +364,7 @@ class Fast4DRegWidget(Container):
                 data = img
             
             if data.shape[0] == 1:
-                ref_channel_int = 0
                 single_channel_mode = True
-            else:
-                ref_channel_int = int(ref_channel)
         else:
             raise ValueError(f"Unsupported image shape: {img.shape}")
         

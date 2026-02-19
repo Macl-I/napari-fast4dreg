@@ -30,6 +30,14 @@ This is a Python port of the original Fast4DReg Fiji Plugin, with added rotation
 - **2D+t support**: Process time-lapse images with various dimensionalities
 - **Compressed storage**: Built-in Blosc compression reduces temporary storage by 2-3×
 
+## Example Results
+  
+![3D_MIP_registration](./media/3D_registration.gif)
+![3D_plane](./media/3D_plane_registration.gif)
+![XY-Drift](./media/XY-Drift.svg)
+![Z-Drift](./media/Z-Drift.svg)
+![Rotation-Drift](./media/Rotation-Drift.svg)
+
 ## Installation
 
 ### Quick Install (with pip)
@@ -254,14 +262,6 @@ The plugin generates the following outputs (when corresponding options are selec
   - `Rotation-Drift.svg` - 3D rotation visualization
 
 All plots are saved as high-quality vector graphics (SVG) or PNG, suitable for publications and presentations.
-
-## Example Results
-  
-![3D_MIP_registration](./media/3D_registration.gif)
-![3D_plane](./media/3D_plane_registration.gif)
-![XY-Drift](./media/XY-Drift.svg)
-![Z-Drift](./media/Z-Drift.svg)
-![Rotation-Drift](./media/Rotation-Drift.svg)
 
 ## Performance Tips
 - **Speed**: The design of this pipeline relies on many read and writes to disk. For optimal performance try writing to a SSD or NVMe SSD.

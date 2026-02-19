@@ -50,7 +50,7 @@ result = register_image_from_file(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `image` | ndarray/dask | required | Image in CTZYX format |
-| `ref_channel` | int/str | 0 | Reference channel(s) for drift detection |
+| `ref_channel` | int/str | 0 | Reference channel(s): int (e.g., `0`), comma-separated (e.g., `"0,1"`), or space-separated (e.g., `"0 1"`) |
 | `output_dir` | str/Path | "./fast4dreg_output" | Output directory |
 | `correct_xy` | bool | True | Apply XY drift correction |
 | `correct_z` | bool | True | Apply Z drift correction |
@@ -119,9 +119,11 @@ result = register_image(
 ### Multi-Channel Reference
 
 ```python
+# Use multiple channels - comma or space-separated
 result = register_image(
     image,
-    ref_channel="0,3,5",  # Use channels 0, 3, and 5
+    ref_channel="0,3,5",  # Use channels 0, 3, and 5 (comma-separated)
+    # OR: ref_channel="0 3 5"  # Space-separated also works
     normalize_channels=True,
     projection_type='max'
 )

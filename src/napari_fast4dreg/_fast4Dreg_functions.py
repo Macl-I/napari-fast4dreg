@@ -52,7 +52,8 @@ def get_reference_data(_data, ref_channel, normalize_channels=False):
     _data : dask array
         Input data with shape (C, T, Z, Y, X)
     ref_channel : int, list, or str
-        Reference channel(s). Can be a single int, list of ints, or comma-separated string
+        Reference channel(s). Can be a single int, list of ints, 
+        comma-separated string (e.g., "0,1,2"), or space-separated string (e.g., "0 1 2")
     normalize_channels : bool
         If True, normalize each channel before summing (when multiple channels)
     
@@ -62,11 +63,13 @@ def get_reference_data(_data, ref_channel, normalize_channels=False):
     """
     # Parse ref_channel
     if isinstance(ref_channel, str):
-        # Handle comma-separated string like "0,3,5"
+        # Handle comma-separated string like "0,3,5" or space-separated like "0 1 2"
         if ',' in ref_channel:
             ref_channels = [int(c.strip()) for c in ref_channel.split(',')]
+        elif ' ' in ref_channel:
+            ref_channels = [int(c.strip()) for c in ref_channel.split()]
         else:
-            ref_channels = [int(ref_channel)]
+            ref_channels = [int(ref_channel.strip())]
     elif isinstance(ref_channel, (list, tuple)):
         ref_channels = list(ref_channel)
     else:

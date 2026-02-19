@@ -97,7 +97,7 @@ pip install -e .
    
    - **Reference Channel(s)**: Specify which channel(s) to use for drift detection
      - Single channel: `0` (first channel), `1` (second channel), etc.
-     - Multiple channels: `0,3,5` (sums channels 0, 3, and 5)
+     - Multiple channels: `0,3,5` or `0 3 5` (comma or space-separated, sums channels)
      - Example: For a nuclear signal in channel 1, enter `1`
    
    - **Normalize Channels**: Enable this when using multiple reference channels with different intensity ranges

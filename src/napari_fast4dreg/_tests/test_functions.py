@@ -107,6 +107,20 @@ def test_get_reference_data_multi_channel_normalized(test_image_5d):
     assert not np.array_equal(ref_data.compute(), simple_sum.compute())
 
 
+def test_get_reference_data_space_separated(test_image_5d):
+    """Test getting multiple reference channels with space-separated format."""
+    ref_data = get_reference_data(test_image_5d, ref_channel="0 1", normalize_channels=False)
+    
+    # Should return sum of both channels (same as comma-separated)
+    assert ref_data.shape == test_image_5d[0].shape
+    expected = test_image_5d[0] + test_image_5d[1]
+    np.testing.assert_array_equal(ref_data.compute(), expected.compute())
+    
+    # Test that comma and space formats give identical results
+    ref_data_comma = get_reference_data(test_image_5d, ref_channel="0,1", normalize_channels=False)
+    np.testing.assert_array_equal(ref_data.compute(), ref_data_comma.compute())
+
+
 def test_get_xy_drift_shape(test_image_5d):
     """Test that XY drift detection returns correct shape."""
     xy_drift = get_xy_drift(

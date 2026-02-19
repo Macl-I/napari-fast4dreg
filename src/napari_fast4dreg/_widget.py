@@ -205,6 +205,7 @@ class Fast4DRegWidget(Container):
         
         # Store output path for loading results later
         self.current_output_path = Path(self.output_path.value)
+        self.current_layer_name = self.image_layer.value.name
         
         # Get image data
         image = self.image_layer.value.data
@@ -212,6 +213,7 @@ class Fast4DRegWidget(Container):
         # Start worker thread
         worker = self._run_registration(
             image=image,
+            image_layer_name=self.current_layer_name,
             axes=self.axes.value,
             ref_channel=self.ref_channel.value,
             normalize_channels=self.normalize_channels.value,
@@ -280,7 +282,7 @@ class Fast4DRegWidget(Container):
         # This is more reliable for large images processed in worker thread
         if self.viewer is not None:
             try:
-                zarr_path = self.current_output_path / "registered.zarr"
+                zarr_path = self.current_output_path / f"{self.current_layer_name}_registered.zarr"
                 if zarr_path.exists():
                     print(f"Loading registered image from: {zarr_path}")
                     # Load from zarr using dask for memory efficiency
@@ -311,6 +313,7 @@ class Fast4DRegWidget(Container):
     def _run_registration(
         self,
         image,
+        image_layer_name,
         axes,
         ref_channel,
         normalize_channels,
@@ -599,22 +602,21 @@ class Fast4DRegWidget(Container):
             tmp_data = tmp_data.swapaxes(0, 1)
             tmp_data = tmp_data.swapaxes(1, 2)
         
-        # Export results
-        yield (current_step, total_steps, "Computing final registered image...")
-        registered_data = tmp_data.compute()
-        current_step += 1
+        # Export results - save to zarr without materializing in memory
+        yield (current_step, total_steps, "Saving registered zarr...")
+        zarr_path = output_dir / f"{image_layer_name}_registered.zarr"
         
-        # Restore original shape by removing added dimensions
+        # Restore original shape by slicing the dask array (no compute needed)
         if len(original_shape) == 3:  # ZYX -> was expanded to CTZYX
-            registered_data = registered_data[0, 0, ...]  # Remove C and T dimensions
+            registered_data = tmp_data[0, 0, ...]  # Remove C and T dimensions
         elif len(original_shape) == 4:
             if axes_enum == Axes.TZYX:
-                registered_data = registered_data[0, ...]  # Remove C dimension -> (T, Z, Y, X)
+                registered_data = tmp_data[0, ...]  # Remove C dimension -> (T, Z, Y, X)
             elif axes_enum in [Axes.ZCYX, Axes.CZYX]:
-                registered_data = registered_data[:, 0, ...]  # Remove T dimension if it was added
+                registered_data = tmp_data[:, 0, ...]  # Remove T dimension if it was added
+        else:
+            registered_data = tmp_data
         
-        yield (current_step, total_steps, "Saving registered.zarr...")
-        zarr_path = output_dir / "registered.zarr"
         # Determine optimal chunking for final output
         shape = registered_data.shape
         if len(shape) == 5:  # CTZYX or TCZYX
@@ -623,7 +625,11 @@ class Fast4DRegWidget(Container):
             chunks = (1, shape[1], shape[2], shape[3])
         else:
             chunks = None
-        da.from_array(registered_data, chunks=chunks).to_zarr(str(zarr_path), overwrite=True)
+        
+        # Save directly to zarr from dask array (no compute, efficient streaming writes)
+        if chunks:
+            registered_data = registered_data.rechunk(chunks)
+        registered_data.to_zarr(str(zarr_path), overwrite=True)
         current_step += 1
         
         elapsed = time.time() - start_time

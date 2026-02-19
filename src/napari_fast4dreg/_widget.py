@@ -270,7 +270,13 @@ class Fast4DRegWidget(Container):
         
         # Add result to viewer if available
         if result is not None and self.viewer is not None:
+            print(f"Adding registered image to napari viewer (shape: {result.shape})")
             self.viewer.add_image(result, name="Registered")
+            print("✓ Registered image added to viewer")
+        elif result is None:
+            print("Warning: No result returned from registration")
+        elif self.viewer is None:
+            print("Warning: No viewer available to display result")
     
     def _on_error(self, error):
         """Handle error."""
@@ -328,6 +334,7 @@ class Fast4DRegWidget(Container):
         # Convert to dask array
         yield (current_step, total_steps, "Step 1: Loading image data...")
         img = da.asarray(image)
+        original_shape = img.shape  # Store original shape to restore at the end
         current_step += 1
         
         yield (current_step, total_steps, f"Step 2: Analyzing image shape {img.shape}...")
@@ -577,12 +584,24 @@ class Fast4DRegWidget(Container):
         registered_data = tmp_data.compute()
         current_step += 1
         
+        # Restore original shape by removing added dimensions
+        if len(original_shape) == 3:  # ZYX -> was expanded to CTZYX
+            registered_data = registered_data[0, 0, ...]  # Remove C and T dimensions
+        elif len(original_shape) == 4:
+            if axes_enum == Axes.TZYX:
+                registered_data = registered_data[0, ...]  # Remove C dimension
+                registered_data = registered_data.swapaxes(0, 1)  # Restore T to first
+            elif axes_enum in [Axes.ZCYX, Axes.CZYX]:
+                registered_data = registered_data[:, 0, ...]  # Remove T dimension if it was added
+        
         yield (current_step, total_steps, "Saving registered.zarr...")
         zarr_path = output_dir / "registered.zarr"
         # Determine optimal chunking for final output
         shape = registered_data.shape
-        if len(shape) == 5:  # TCZYX
+        if len(shape) == 5:  # CTZYX or TCZYX
             chunks = (1, 1, shape[2], shape[3], shape[4])
+        elif len(shape) == 4:
+            chunks = (1, shape[1], shape[2], shape[3])
         else:
             chunks = None
         da.from_array(registered_data, chunks=chunks).to_zarr(str(zarr_path), overwrite=True)
@@ -595,6 +614,14 @@ class Fast4DRegWidget(Container):
             time_str = f"{elapsed/60:.1f}min"
         else:
             time_str = f"{elapsed/3600:.2f}h"
+        
+        print("=" * 80)
+        print("✓ REGISTRATION PIPELINE COMPLETE!")
+        print(f"  Total processing time: {time_str}")
+        print(f"  Input shape:  {original_shape}")
+        print(f"  Output shape: {registered_data.shape}")
+        print(f"  Saved to: {zarr_path}")
+        print("=" * 80)
         
         yield (total_steps, total_steps, f"Registration complete! Total time: {time_str}")
         

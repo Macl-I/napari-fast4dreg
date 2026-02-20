@@ -20,6 +20,137 @@ from tqdm import tqdm
 import sys
 import os
 
+# Optional GPU acceleration with pyclesperanto
+try:
+    import pyclesperanto_prototype as cle
+    PYCLESPERANTO_AVAILABLE = True
+except ImportError:
+    PYCLESPERANTO_AVAILABLE = False
+    cle = None
+
+# Global flag to control GPU usage (can be set by user)
+USE_GPU_ACCELERATION = False
+GPU_INFO = "CPU (scipy)"
+
+def get_gpu_info():
+    """Get information about available GPU and current backend.
+    
+    Returns:
+    --------
+    str : Description of current processing backend (CPU or GPU with device name)
+    """
+    return GPU_INFO
+
+def _detect_and_select_gpu():
+    """Detect available GPUs and select the best one (prefer NVIDIA over Intel).
+    
+    Returns:
+    --------
+    tuple : (success: bool, device_name: str, device_info: str)
+    """
+    if not PYCLESPERANTO_AVAILABLE:
+        return False, None, "CPU (scipy)"
+    
+    try:
+        # Get all available devices
+        available_devices = cle.available_device_names()
+        print("Available OpenCL devices:")
+
+        for i, device in enumerate(available_devices, 1):
+            print(f"  {i}. {device}")
+
+        if not available_devices:
+            return False, None, "CPU (scipy) - No GPU devices found"
+        
+        # Prefer NVIDIA over Intel over others
+        nvidia_devices = [d for d in available_devices if 'nvidia' in d.lower() or 'geforce' in d.lower() or 'rtx' in d.lower() or 'gtx' in d.lower()]
+        intel_devices = [d for d in available_devices if 'intel' in d.lower()]
+        
+        selected_device = None
+        if nvidia_devices:
+            selected_device = nvidia_devices[0]
+            print(f"Found NVIDIA GPU: {selected_device}")
+        elif intel_devices:
+            selected_device = intel_devices[0]
+            print(f"Found Intel GPU: {selected_device}")
+        else:
+            selected_device = available_devices[0]
+            print(f"Found GPU: {selected_device}")
+        
+        # Try to select the device
+        cle.select_device(selected_device)
+        device_info = f"GPU ({selected_device})"
+        print(f"Successfully selected GPU: {selected_device}")
+        return True, selected_device, device_info
+        
+    except Exception as e:
+        print(f"Warning: Failed to initialize GPU: {e}")
+        return False, None, "CPU (scipy) - GPU initialization failed"
+
+def _is_gpu_oom_error(exc):
+    message = str(exc).lower()
+    return any(token in message for token in [
+        "out of memory",
+        "cl_out_of_resources",
+        "cl_out_of_memory",
+        "cl_mem_object_allocation_failure",
+        "insufficient memory",
+        "not enough memory",
+    ])
+
+def set_gpu_acceleration(enabled=True):
+    """Enable or disable GPU acceleration using pyclesperanto.
+    
+    Parameters:
+    -----------
+    enabled : bool
+        If True, use GPU acceleration (requires pyclesperanto_prototype).
+        If False, use CPU (scipy) for transformations.
+    
+    Returns:
+    --------
+    bool : True if GPU acceleration was successfully enabled, False otherwise
+    """
+    global USE_GPU_ACCELERATION, GPU_INFO
+    
+    if enabled and not PYCLESPERANTO_AVAILABLE:
+        print("Warning: pyclesperanto_prototype not available. Install with: pip install pyclesperanto-prototype")
+        print("Falling back to CPU (scipy) processing.")
+        USE_GPU_ACCELERATION = False
+        GPU_INFO = "CPU (scipy)"
+        return False
+    
+    if enabled:
+        # Try to detect and select best GPU
+        success, device_name, device_info = _detect_and_select_gpu()
+        USE_GPU_ACCELERATION = success
+        GPU_INFO = device_info
+        if success:
+            print(f"Transform backend set to: {device_info}")
+        else:
+            print(f"Transform backend set to: {device_info}")
+        return success
+    else:
+        USE_GPU_ACCELERATION = False
+        GPU_INFO = "CPU (scipy)"
+        print(f"Transform backend set to: {GPU_INFO}")
+        return False
+
+# Automatically detect and enable GPU on module import
+if PYCLESPERANTO_AVAILABLE:
+    print("pyclesperanto_prototype available - detecting GPU...")
+    _auto_success, _auto_device, _auto_info = _detect_and_select_gpu()
+    if _auto_success:
+        USE_GPU_ACCELERATION = True
+        GPU_INFO = _auto_info
+        print(f"✓ GPU acceleration enabled automatically: {_auto_info}")
+    else:
+        print(f"✗ GPU not available: {_auto_info}")
+        GPU_INFO = _auto_info
+else:
+    print("pyclesperanto_prototype not installed - using CPU (scipy)")
+    GPU_INFO = "CPU (scipy)"
+
 def apply_projection(data, axis, projection_type='average'):
     """Apply projection along axis using specified method.
     
@@ -260,58 +391,144 @@ def translate_z_stack(_image, _shift, transform_type='z'):
     #   'gamma': ZY plane rotation (around X axis) - angle in degrees
     # Applies transformations to the entire z-stack at once (3D transformation, not plane-by-plane)
     
+    # Choose backend based on global flag
+    if USE_GPU_ACCELERATION and PYCLESPERANTO_AVAILABLE:
+        return _translate_z_stack_gpu(_image, _shift, transform_type)
+    else:
+        return _translate_z_stack_cpu(_image, _shift, transform_type)
+
+
+def _translate_z_stack_cpu(_image, _shift, transform_type):
+    """CPU implementation using scipy.ndimage."""
     _image_out = []
     _shift = - _shift  # Negate shift for correct direction
+    return_numpy = isinstance(_image, np.ndarray) and _image.ndim == 3
+    image_iter = [_image] if return_numpy else _image
+
+    for c, C in enumerate(image_iter):
+        # C has shape (z, y, x) and is a dask array or numpy array
+        use_numpy = return_numpy or isinstance(C, np.ndarray)
+
+        if transform_type == 'z':
+            # Z-direction translation: shift in z (dim 0) and x (dim 2), no shift in y (dim 1)
+            shift_z = float(_shift[0])
+            shift_x = float(_shift[1])
+            offset = np.array([shift_z, 0.0, shift_x])
+            if use_numpy:
+                result = affine_transform(C, np.eye(3), offset=offset, order=1, mode='constant', cval=0.0)
+            else:
+                delayed_result = dask.delayed(affine_transform)(C, np.eye(3), offset=offset, order=1, mode='constant', cval=0.0)
+                result = da.from_delayed(delayed_result, shape=C.shape, dtype=C.dtype)
+
+        elif transform_type == 'xy':
+            # XY plane translation: applied uniformly across entire z-stack (3D volume)
+            offset = np.array([0.0, float(_shift[0]), float(_shift[1])])
+            if use_numpy:
+                result = affine_transform(C, np.eye(3), offset=offset, order=1, mode='constant', cval=0.0)
+            else:
+                delayed_result = dask.delayed(affine_transform)(C, np.eye(3), offset=offset, order=1, mode='constant', cval=0.0)
+                result = da.from_delayed(delayed_result, shape=C.shape, dtype=C.dtype)
+
+        elif transform_type == 'alpha':
+            # XY plane rotation (rotation around Z axis) - applied uniformly to entire z-stack
+            angle = float(_shift)
+            if use_numpy:
+                result = rotate(C, angle, axes=(1, 2), reshape=False, order=1, mode='constant', cval=0.0)
+            else:
+                delayed_result = dask.delayed(rotate)(C, angle, axes=(1, 2), reshape=False, order=1, mode='constant', cval=0.0)
+                result = da.from_delayed(delayed_result, shape=C.shape, dtype=C.dtype)
+
+        elif transform_type == 'beta':
+            # ZX plane rotation (rotation around Y axis) - applied uniformly to entire z-stack
+            angle = float(_shift)
+            if use_numpy:
+                result = rotate(C, angle, axes=(0, 2), reshape=False, order=1, mode='constant', cval=0.0)
+            else:
+                delayed_result = dask.delayed(rotate)(C, angle, axes=(0, 2), reshape=False, order=1, mode='constant', cval=0.0)
+                result = da.from_delayed(delayed_result, shape=C.shape, dtype=C.dtype)
+
+        elif transform_type == 'gamma':
+            # ZY plane rotation (rotation around X axis) - applied uniformly to entire z-stack
+            angle = float(_shift)
+            if use_numpy:
+                result = rotate(C, angle, axes=(0, 1), reshape=False, order=1, mode='constant', cval=0.0)
+            else:
+                delayed_result = dask.delayed(rotate)(C, angle, axes=(0, 1), reshape=False, order=1, mode='constant', cval=0.0)
+                result = da.from_delayed(delayed_result, shape=C.shape, dtype=C.dtype)
+
+        else:
+            raise ValueError(f"Unknown transform_type: {transform_type}. Supported: 'z', 'xy', 'alpha', 'beta', 'gamma'")
+
+        _image_out.append(result)
+
+    return _image_out[0] if return_numpy else da.stack(_image_out)
+
+
+def _translate_z_stack_gpu(_image, _shift, transform_type):
+    """GPU implementation using pyclesperanto."""
+    _image_out = []
+    
+    def _apply_gpu_transform(img_data, shift_params, ttype):
+        """Helper to apply GPU transformation to numpy array."""
+        global USE_GPU_ACCELERATION, GPU_INFO
+        # Convert to numpy if dask array
+        if hasattr(img_data, 'compute'):
+            img_data = np.asarray(img_data.compute())
+        else:
+            img_data = np.asarray(img_data)
+        try:
+            # Push to GPU
+            gpu_img = cle.push(img_data)
+
+            if ttype == 'z':
+                # Z-direction translation: shift in z (dim 0) and x (dim 2)
+                shift_z = float(shift_params[0])
+                shift_x = float(shift_params[1])
+                # pyclesperanto uses (x, y, z) order, we have (z, y, x)
+                # So translate with translateZ=shift_z, translateX=shift_x
+                result_gpu = cle.translate(gpu_img, translate_x=shift_x, translate_y=0, translate_z=shift_z)
+
+            elif ttype == 'xy':
+                # XY plane translation across entire z-stack
+                shift_y = float(shift_params[0])
+                shift_x = float(shift_params[1])
+                result_gpu = cle.translate(gpu_img, translate_x=shift_x, translate_y=shift_y, translate_z=0)
+
+            elif ttype == 'alpha':
+                # XY plane rotation (around Z axis)
+                angle = float(shift_params)
+                # Rotate in XY plane (around Z axis)
+                result_gpu = cle.rotate(gpu_img, angle_around_z_in_degrees=angle, rotate_around_center=True)
+
+            elif ttype == 'beta':
+                # ZX plane rotation (around Y axis)
+                angle = float(shift_params)
+                result_gpu = cle.rotate(gpu_img, angle_around_y_in_degrees=angle, rotate_around_center=True)
+
+            elif ttype == 'gamma':
+                # ZY plane rotation (around X axis)
+                angle = float(shift_params)
+                result_gpu = cle.rotate(gpu_img, angle_around_x_in_degrees=angle, rotate_around_center=True)
+
+            else:
+                raise ValueError(f"Unknown transform_type: {ttype}")
+
+            # Pull back from GPU and return
+            result = cle.pull(result_gpu)
+            return result.astype(img_data.dtype)
+        except Exception as e:
+            if _is_gpu_oom_error(e):
+                print("Warning: GPU out of memory. Switching to CPU (scipy) for this transform and disabling GPU.")
+                USE_GPU_ACCELERATION = False
+                GPU_INFO = "CPU (scipy) - GPU OOM fallback"
+                result = _translate_z_stack_cpu(img_data, shift_params, ttype)
+                return result.astype(img_data.dtype)
+            raise
     
     for c, C in enumerate(_image):
         # C has shape (z, y, x) and is a dask array
-        
-        if transform_type == 'z':
-            # Z-direction translation: shift in z (dim 0) and x (dim 2), no shift in y (dim 1)
-            # Use affine_transform with 3D matrix for entire z-stack
-            shift_z = float(_shift[0])
-            shift_x = float(_shift[1])
-            # offset for affine_transform: [offset_z, offset_y, offset_x]
-            offset = np.array([shift_z, 0.0, shift_x])
-            
-            delayed_result = dask.delayed(affine_transform)(C, np.eye(3), offset=offset, order=1, mode='constant', cval=0.0)
-            _image_out.append(da.from_delayed(delayed_result, shape=C.shape, dtype=C.dtype))
-        
-        elif transform_type == 'xy':
-            # XY plane translation: applied uniformly across entire z-stack (3D volume)
-            # _shift is [shift_y, shift_x]
-            # offset for affine_transform: [offset_z, offset_y, offset_x]
-            offset = np.array([0.0, float(_shift[0]), float(_shift[1])])
-            
-            delayed_result = dask.delayed(affine_transform)(C, np.eye(3), offset=offset, order=1, mode='constant', cval=0.0)
-            _image_out.append(da.from_delayed(delayed_result, shape=C.shape, dtype=C.dtype))
-        
-        elif transform_type == 'alpha':
-            # XY plane rotation (rotation around Z axis) - applied uniformly to entire z-stack
-            # _shift is the rotation angle in degrees
-            angle = float(_shift)
-            # Rotate around Z axis: use axes=(1, 2) which are y and x axes
-            delayed_result = dask.delayed(rotate)(C, angle, axes=(1, 2), reshape=False, order=1, mode='constant', cval=0.0)
-            _image_out.append(da.from_delayed(delayed_result, shape=C.shape, dtype=C.dtype))
-        
-        elif transform_type == 'beta':
-            # ZX plane rotation (rotation around Y axis) - applied uniformly to entire z-stack
-            # _shift is the rotation angle in degrees
-            angle = float(_shift)
-            # Rotate around Y axis: use axes=(0, 2) which are z and x axes
-            delayed_result = dask.delayed(rotate)(C, angle, axes=(0, 2), reshape=False, order=1, mode='constant', cval=0.0)
-            _image_out.append(da.from_delayed(delayed_result, shape=C.shape, dtype=C.dtype))
-        
-        elif transform_type == 'gamma':
-            # ZY plane rotation (rotation around X axis) - applied uniformly to entire z-stack
-            # _shift is the rotation angle in degrees
-            angle = float(_shift)
-            # Rotate around X axis: use axes=(0, 1) which are z and y axes
-            delayed_result = dask.delayed(rotate)(C, angle, axes=(0, 1), reshape=False, order=1, mode='constant', cval=0.0)
-            _image_out.append(da.from_delayed(delayed_result, shape=C.shape, dtype=C.dtype))
-        
-        else:
-            raise ValueError(f"Unknown transform_type: {transform_type}. Supported: 'z', 'xy', 'alpha', 'beta', 'gamma'")
+        delayed_result = dask.delayed(_apply_gpu_transform)(C, _shift, transform_type)
+        _image_out.append(da.from_delayed(delayed_result, shape=C.shape, dtype=C.dtype))
     
     return da.stack(_image_out)
 
@@ -346,7 +563,8 @@ def crop_data(data, xy_drift, z_drift):
                                                 x_crop[0]:x_crop[1]]
     return cropped
 
-def get_rotation(data, ref_channel, projection_type='average', reference_mode='relative', normalize_channels=False):
+def get_rotation_alpha(data, ref_channel, projection_type='average', reference_mode='relative', normalize_channels=False):
+    """Detect rotation in XY plane (alpha rotation)."""
     # Rechunk to ensure T dimension is fully loaded
     data_ref = get_reference_data(data, ref_channel, normalize_channels)
     data_ref = data_ref.rechunk({0: -1, 1: 'auto', 2: 'auto', 3: 'auto'})
@@ -354,29 +572,44 @@ def get_rotation(data, ref_channel, projection_type='average', reference_mode='r
     # Get rotation in XY plane (projecting over Z)
     xy_movie = np.array(apply_projection(data_ref, axis=1, projection_type=projection_type))
     radius_xy = int(min(da.shape(data)[3], da.shape(data)[4])/2)
+
+    print(f'Determining rotation in XY plane (projection: {projection_type}, reference: {reference_mode})')
+    
+    # XY rotation detection
+    shifts_xy = []
+    if reference_mode == 'relative':
+        for t in tqdm(range(len(xy_movie)-1), desc='XY rotation'):
+            s, e, p = phase_cross_correlation(warp_polar(xy_movie[t], radius = radius_xy),
+                                              warp_polar(xy_movie[t+1], radius = radius_xy), 
+                                              normalization=None)
+            shifts_xy.append(s)
+        shifts_a_xy = np.cumsum(np.array(shifts_xy), axis = 0)
+        shifts_a_xy = shifts_a_xy.tolist()
+        shifts_a_xy.insert(0,[0,0])
+    else:
+        for t in tqdm(range(1, len(xy_movie)), desc='XY rotation'):
+            s, e, p = phase_cross_correlation(warp_polar(xy_movie[0], radius = radius_xy),
+                                              warp_polar(xy_movie[t], radius = radius_xy), 
+                                              normalization=None)
+            shifts_xy.append(s)
+        shifts_a_xy = np.array(shifts_xy).tolist()
+        shifts_a_xy.insert(0,[0,0])
+    shifts_a_xy = np.asarray(shifts_a_xy)
+    
+    return shifts_a_xy[:,0]
+
+
+def get_rotation_beta(data, ref_channel, projection_type='average', reference_mode='relative', normalize_channels=False):
+    """Detect rotation in ZX plane (beta rotation)."""
+    # Rechunk to ensure T dimension is fully loaded
+    data_ref = get_reference_data(data, ref_channel, normalize_channels)
+    data_ref = data_ref.rechunk({0: -1, 1: 'auto', 2: 'auto', 3: 'auto'})
     
     # Get rotation in ZX plane (projecting over Y)
     zx_movie = np.array(apply_projection(da.swapaxes(data_ref, 2, 1), axis=1, projection_type=projection_type))
     radius_zx = int(min(da.shape(data)[2], da.shape(data)[4])/2)
-    
-    # Get rotation in ZY plane (projecting over X)
-    zy_movie = np.array(apply_projection(da.swapaxes(data_ref, 3, 1), axis=1, projection_type=projection_type))
-    radius_zy = int(min(da.shape(data)[2], da.shape(data)[3])/2)
 
-    print(f'Determining rotation in XY, ZX, and ZY planes (projection: {projection_type}, reference: {reference_mode})')
-    
-    # XY rotation detection
-    shifts_xy = []
-    for t in tqdm(range(len(xy_movie)-1), desc='XY rotation'):
-        s, e, p = phase_cross_correlation(warp_polar(xy_movie[t], radius = radius_xy),
-                                          warp_polar(xy_movie[t+1], radius = radius_xy), 
-                                          normalization=None)
-        shifts_xy.append(s)
-   
-    shifts_a_xy = np.cumsum(np.array(shifts_xy), axis = 0)
-    shifts_a_xy = shifts_a_xy.tolist()
-    shifts_a_xy.insert(0,[0,0])
-    shifts_a_xy = np.asarray(shifts_a_xy)
+    print(f'Determining rotation in ZX plane (projection: {projection_type}, reference: {reference_mode})')
     
     # ZX rotation detection
     shifts_zx = []
@@ -399,6 +632,21 @@ def get_rotation(data, ref_channel, projection_type='average', reference_mode='r
         shifts_a_zx.insert(0,[0,0])
     shifts_a_zx = np.asarray(shifts_a_zx)
     
+    return shifts_a_zx[:,0]
+
+
+def get_rotation_gamma(data, ref_channel, projection_type='average', reference_mode='relative', normalize_channels=False):
+    """Detect rotation in ZY plane (gamma rotation)."""
+    # Rechunk to ensure T dimension is fully loaded
+    data_ref = get_reference_data(data, ref_channel, normalize_channels)
+    data_ref = data_ref.rechunk({0: -1, 1: 'auto', 2: 'auto', 3: 'auto'})
+    
+    # Get rotation in ZY plane (projecting over X)
+    zy_movie = np.array(apply_projection(da.swapaxes(data_ref, 3, 1), axis=1, projection_type=projection_type))
+    radius_zy = int(min(da.shape(data)[2], da.shape(data)[3])/2)
+
+    print(f'Determining rotation in ZY plane (projection: {projection_type}, reference: {reference_mode})')
+    
     # ZY rotation detection
     shifts_zy = []
     if reference_mode == 'relative':
@@ -420,23 +668,33 @@ def get_rotation(data, ref_channel, projection_type='average', reference_mode='r
         shifts_a_zy.insert(0,[0,0])
     shifts_a_zy = np.asarray(shifts_a_zy)
     
+    return shifts_a_zy[:,0]
+
+
+def get_rotation(data, ref_channel, projection_type='average', reference_mode='relative', normalize_channels=False):
+    """Detect rotation in all three planes (XY, ZX, ZY) - legacy function that detects all at once."""
+    # Get all rotations
+    alpha_xy = get_rotation_alpha(data, ref_channel, projection_type, reference_mode, normalize_channels)
+    beta_zx = get_rotation_beta(data, ref_channel, projection_type, reference_mode, normalize_channels)
+    gamma_zy = get_rotation_gamma(data, ref_channel, projection_type, reference_mode, normalize_channels)
+    
     # Plot results for all three planes
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
     
     axes[0].set_title('XY-Rotation (alpha)')
-    axes[0].plot(shifts_a_xy[:,0], label = 'alpha')
+    axes[0].plot(alpha_xy, label = 'alpha')
     axes[0].legend()
     axes[0].set_xlabel('Timesteps')
     axes[0].set_ylabel('Rotation in degree')
     
     axes[1].set_title('ZX-Rotation (beta)')
-    axes[1].plot(shifts_a_zx[:,0], label = 'beta')
+    axes[1].plot(beta_zx, label = 'beta')
     axes[1].legend()
     axes[1].set_xlabel('Timesteps')
     axes[1].set_ylabel('Rotation in degree')
     
     axes[2].set_title('ZY-Rotation (gamma)')
-    axes[2].plot(shifts_a_zy[:,0], label = 'gamma')
+    axes[2].plot(gamma_zy, label = 'gamma')
     axes[2].legend()
     axes[2].set_xlabel('Timesteps')
     axes[2].set_ylabel('Rotation in degree')
@@ -445,7 +703,7 @@ def get_rotation(data, ref_channel, projection_type='average', reference_mode='r
     plt.savefig('Rotation-Drift.svg')
     plt.clf()
 
-    return shifts_a_xy[:,0], shifts_a_zx[:,0], shifts_a_zy[:,0]
+    return alpha_xy, beta_zx, gamma_zy
 
 
 def apply_alpha_drift(_data, alpha_xy):

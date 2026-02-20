@@ -4,6 +4,13 @@ Example: Using napari-fast4dreg programmatically via API.
 
 This script demonstrates how to integrate Fast4DReg into your
 workflows without the napari GUI.
+
+Key Features:
+- XY, Z, and 3D rotation drift correction
+- Sequential rotation correction (XY → ZX → ZY) for improved accuracy
+- Flexible reference channel selection (single or multiple channels)
+- Progress callbacks for integration
+- Efficient out-of-memory processing with dask/zarr
 """
 
 import numpy as np
@@ -120,10 +127,47 @@ def example_4_multi_channel_reference():
     print()
 
 
-def example_5_integration_workflow():
-    """Example 5: Integration into a larger workflow."""
+def example_5_rotation_correction():
+    """Example 5: Understanding sequential rotation correction."""
     print("="*60)
-    print("Example 5: Integration into workflow")
+    print("Example 5: Sequential Rotation Correction")
+    print("="*60)
+    
+    example_dir = Path(__file__).parent / "example_files"
+    
+    print("\nFast4DReg applies 3D rotation correction sequentially:")
+    print("  1. Alpha (XY plane) - detected and applied first")
+    print("  2. Beta (ZX plane) - detected on alpha-corrected data")
+    print("  3. Gamma (ZY plane) - detected on alpha+beta-corrected data")
+    print("\nThis sequential approach improves accuracy when multiple")
+    print("rotation components are present.")
+    print()
+    
+    # Run with rotation correction enabled
+    result = register_image_from_file(
+        example_dir / "xtitched_organoid_timelapse_ch0_cytosol_ch1_nuclei.tif",
+        axis_order="TZCYX",
+        ref_channel=1,
+        output_dir=example_dir / "api_output_example5",
+        correct_xy=True,
+        correct_z=True,
+        correct_rotation=True,  # Sequential XY→ZX→ZY rotation
+        progress_callback=lambda msg: print(f"  {msg}"),
+    )
+    
+    # Analyze rotation components
+    print(f"\n  Rotation angles detected:")
+    print(f"    XY (alpha): mean={result['rotation_xy'].mean():.3f}°, max={result['rotation_xy'].max():.3f}°")
+    print(f"    ZX (beta):  mean={result['rotation_zx'].mean():.3f}°, max={result['rotation_zx'].max():.3f}°")
+    print(f"    ZY (gamma): mean={result['rotation_zy'].mean():.3f}°, max={result['rotation_zy'].max():.3f}°")
+    print(f"\n  Output: {result['output_path']}")
+    print()
+
+
+def example_6_integration_workflow():
+    """Example 6: Integration into a larger workflow."""
+    print("="*60)
+    print("Example 6: Integration into workflow")
     print("="*60)
     
     example_dir = Path(__file__).parent / "example_files"
@@ -138,7 +182,7 @@ def example_5_integration_workflow():
         example_dir / "xtitched_organoid_timelapse_ch0_cytosol_ch1_nuclei.tif",
         axis_order="TZCYX",
         ref_channel=1,
-        output_dir=example_dir / "api_output_example5",
+        output_dir=example_dir / "api_output_example6",
         correct_xy=True,
         correct_z=True,
         correct_rotation=True,
@@ -163,6 +207,67 @@ def example_5_integration_workflow():
         z_drift = result['z_drift']
         print(f"  Max Z drift: {np.abs(z_drift).max():.2f} pixels")
         print(f"  Mean Z drift: {np.abs(z_drift).mean():.2f} pixels")
+    
+    print()
+
+
+def example_7_gpu_acceleration():
+    """Example 7: GPU acceleration - automatic detection and manual control."""
+    print("="*60)
+    print("Example 7: GPU Acceleration (Automatic Detection)")
+    print("="*60)
+    
+    from napari_fast4dreg import set_gpu_acceleration, get_gpu_info
+    
+    example_dir = Path(__file__).parent / "example_files"
+    
+    print("\nGPU acceleration is AUTOMATICALLY DETECTED and enabled on import.")
+    print("NVIDIA GPUs are preferred over Intel GPUs.")
+    print("Requires: pip install pyclesperanto-prototype")
+    print()
+    
+    # Check current GPU status
+    print(f"Current backend: {get_gpu_info()}")
+    
+    # Check if GPU is already enabled from automatic detection
+    from napari_fast4dreg._fast4Dreg_functions import USE_GPU_ACCELERATION
+    
+    if USE_GPU_ACCELERATION:
+        print("✓ GPU acceleration was automatically enabled!")
+        print("\nRunning registration with GPU acceleration...")
+        
+        import time
+        start_time = time.time()
+        
+        result = register_image_from_file(
+            example_dir / "xtitched_organoid_timelapse_ch0_cytosol_ch1_nuclei.tif",
+            axis_order="TZCYX",
+            ref_channel=1,
+            output_dir=example_dir / "api_output_example7_gpu",
+            correct_xy=True,
+            correct_z=True,
+            correct_rotation=True,
+            progress_callback=lambda msg: print(f"  {msg}"),
+        )
+        
+        gpu_time = time.time() - start_time
+        print(f"\n  GPU processing time: {gpu_time:.1f}s")
+        print(f"  GPU device: {get_gpu_info()}")
+        print(f"  Output: {result['output_path']}")
+        
+        # Show how to manually disable GPU
+        print("\n  You can manually disable GPU if needed:")
+        print("  set_gpu_acceleration(False)")
+        print("  Typical GPU speedup: 5-10x for transformation operations")
+    else:
+        print("✗ GPU acceleration not available (CPU mode)")
+        print(f"  Backend: {get_gpu_info()}")
+        print("\n  To enable GPU acceleration:")
+        print("  1. Install: pip install pyclesperanto-prototype")
+        print("  2. Ensure OpenCL-compatible GPU is available")
+        print("  3. Restart Python - GPU will be auto-detected")
+        print("\n  Or manually enable: set_gpu_acceleration(True)")
+        print("  Requires OpenCL-compatible GPU (NVIDIA, AMD, or Intel)")
     
     print()
 
@@ -194,9 +299,19 @@ if __name__ == "__main__":
         print(f"Example 4 failed: {e}\n")
     
     try:
-        example_5_integration_workflow()
+        example_5_rotation_correction()
     except Exception as e:
         print(f"Example 5 failed: {e}\n")
+    
+    try:
+        example_6_integration_workflow()
+    except Exception as e:
+        print(f"Example 6 failed: {e}\n")
+    
+    try:
+        example_7_gpu_acceleration()
+    except Exception as e:
+        print(f"Example 7 failed: {e}\n")
     
     print("="*60)
     print("All examples completed!")

@@ -54,7 +54,7 @@ result = register_image_from_file(
 | `output_dir` | str/Path | "./fast4dreg_output" | Output directory |
 | `correct_xy` | bool | True | Apply XY drift correction |
 | `correct_z` | bool | True | Apply Z drift correction |
-| `correct_rotation` | bool | True | Apply 3D rotation correction |
+| `correct_rotation` | bool | True | Apply 3D rotation correction (sequential: XY→ZX→ZY) |
 | `crop_output` | bool | False | Crop invalid regions |
 | `projection_type` | str | 'average' | 'average', 'max', 'median', 'min' |
 | `reference_mode` | str | 'relative' | 'relative' or 'first_frame' |
@@ -235,6 +235,82 @@ registered = da.from_zarr("./results/registered.zarr")
 3. **Accuracy**: Use max projection for sparse bright features
 4. **Multi-channel**: Enable normalization if intensities differ greatly
 5. **Storage**: Clean up temp files with `keep_temp_files=False` (default)
+6. **Rotation**: Rotations are estimated and applied sequentially (XY plane first, then ZX, then ZY) on the already-corrected data for improved accuracy
+7. **GPU Acceleration**: Automatic GPU detection and acceleration. Prefers NVIDIA over Intel GPUs
+
+## GPU Acceleration (Optional)
+
+Fast4DReg **automatically detects and enables GPU acceleration** when available using [pyclesperanto](https://github.com/clEsperanto/pyclesperanto_prototype) for all transformation operations (translations and rotations).
+
+### Installation
+
+```bash
+# Install pyclesperanto for GPU support
+pip install pyclesperanto-prototype
+```
+
+### Automatic Detection
+
+When you import napari-fast4dreg, it will:
+1. **Automatically detect** available GPUs
+2. **Prefer NVIDIA** GPUs over Intel GPUs
+3. **Enable GPU acceleration** if a suitable GPU is found
+4. **Display GPU info** in the napari widget
+5. **Fall back to CPU** if GPU memory is insufficient for a transform
+
+```python
+from napari_fast4dreg import register_image, get_gpu_info
+
+# Check which backend is being used
+print(get_gpu_info())  # e.g., "GPU (NVIDIA GeForce RTX 3080)" or "CPU (scipy)"
+
+# Run registration - GPU will be used automatically if available
+result = register_image(
+    image,
+    ref_channel=0,
+    output_dir="./results"
+)
+```
+
+### Manual Control (Optional)
+
+You can manually enable/disable GPU acceleration:
+
+```python
+from napari_fast4dreg import set_gpu_acceleration, get_gpu_info
+
+# Manually enable GPU (if available)
+success = set_gpu_acceleration(True)
+print(f"GPU enabled: {success}")
+print(f"Backend: {get_gpu_info()}")
+
+# Disable GPU acceleration (use CPU)
+set_gpu_acceleration(False)
+print(f"Backend: {get_gpu_info()}")  # "CPU (scipy)"
+```
+
+### GPU Priority
+
+When multiple GPUs are available, Fast4DReg selects in this order:
+1. **NVIDIA** (GeForce, RTX, GTX, Quadro, Tesla)
+2. **Intel** (Iris, HD Graphics)
+3. **Other** OpenCL-compatible devices
+
+**Performance**: GPU acceleration can provide 5-10x speedup for transformation steps, especially beneficial for:
+- Large images (>1GB)
+- High timepoint counts (>50 frames)
+- 3D rotation corrections
+
+**Requirements**: 
+- OpenCL-compatible GPU (NVIDIA, AMD, or Intel)
+- pyclesperanto-prototype installed
+- Sufficient GPU memory for image data
+
+**Notes**:
+- If OpenCL only reports a CPU device, install the NVIDIA OpenCL ICD for your driver.
+- If a transform runs out of VRAM, Fast4DReg switches to CPU automatically and continues.
+
+**Note**: The napari widget displays the current processing backend (GPU device name or CPU) in the "Processing Backend" field.
 
 ## Need Help?
 

@@ -10,6 +10,7 @@ import sys
 import os
 from pathlib import Path
 import zarr
+import tifffile
 
 # Add src to path to import directly from module (avoid Qt dependencies)
 sys.path.insert(0, str(Path(__file__).parent / "src" / "napari_fast4dreg"))
@@ -20,7 +21,9 @@ from _fast4Dreg_functions import (
     apply_xy_drift,
     get_z_drift,
     apply_z_drift,
-    get_rotation,
+    get_rotation_alpha,
+    get_rotation_beta,
+    get_rotation_gamma,
     apply_alpha_drift,
     apply_beta_drift,
     apply_gamma_drift,
@@ -98,24 +101,37 @@ def main():
     tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
     print(f"Z drift shape: {z_drift.shape}")
     
-    # Step 4: 3D Rotation correction
-    print("\n[4/5] Detecting 3D rotation (XY, ZX, ZY)...")
-    alpha_xy, beta_zx, gamma_zy = get_rotation(tmp_data, ref_channel)
+    # Step 4: 3D Rotation correction - Sequential estimation and application
+    print("\n[4/5] Detecting and applying 3D rotations sequentially...")
+    
+    # Alpha (XY plane) rotation
+    print("  - Detecting XY plane rotation (alpha)...")
+    alpha_xy = get_rotation_alpha(tmp_data, ref_channel)
+    print("  - Applying alpha rotation...")
     tmp_data = apply_alpha_drift(tmp_data, alpha_xy)
     tmp_data = write_tmp_data_to_disk(tmp_path_write, tmp_data, new_shape)
-    # Swap paths for next iteration
     tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
     
+    # Beta (ZX plane) rotation - detected on alpha-corrected data
+    print("  - Detecting ZX plane rotation (beta)...")
+    beta_zx = get_rotation_beta(tmp_data, ref_channel)
+    print("  - Applying beta rotation...")
     tmp_data = apply_beta_drift(tmp_data, beta_zx)
     tmp_data = write_tmp_data_to_disk(tmp_path_write, tmp_data, new_shape)
-    # Swap paths for next iteration
     tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
     
+    # Gamma (ZY plane) rotation - detected on alpha+beta-corrected data
+    print("  - Detecting ZY plane rotation (gamma)...")
+    gamma_zy = get_rotation_gamma(tmp_data, ref_channel)
+    print("  - Applying gamma rotation...")
     tmp_data = apply_gamma_drift(tmp_data, gamma_zy)
     tmp_data = write_tmp_data_to_disk(tmp_path_write, tmp_data, new_shape)
-    # Swap paths for next iteration
     tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
-    print(f"Rotation angles - XY: {alpha_xy[:5]} ... ZX: {beta_zx[:5]} ... ZY: {gamma_zy[:5]}")
+    
+    print(f"  Rotation angles detected:")
+    print(f"    XY (alpha): {alpha_xy[:5]} ...")
+    print(f"    ZX (beta):  {beta_zx[:5]} ...")
+    print(f"    ZY (gamma): {gamma_zy[:5]} ...")
     
     # Step 5: Export results
     print("\n[5/5] Exporting registered image...")

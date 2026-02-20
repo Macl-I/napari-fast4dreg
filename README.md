@@ -27,6 +27,7 @@ This is a Python port of the original Fast4DReg Fiji Plugin, with added rotation
 - **Thread-based execution**: Non-blocking UI during processing
 - **Flexible axis ordering**: Support for ImageJ and Python axis conventions
 - **Auto-detection**: Automatic single-channel mode detection
+- **GPU acceleration (optional)**: Automatic OpenCL GPU detection with NVIDIA preference and CPU fallback
 - **2D+t support**: Process time-lapse images with various dimensionalities
 - **Compressed storage**: Built-in Blosc compression reduces temporary storage by 2-3×
 
@@ -85,6 +86,26 @@ For the best experience and easier dependency management, we recommend using [An
 git clone https://github.com/COSC-Lab/napari-fast4dreg.git
 cd napari-fast4dreg
 pip install -e .
+```
+
+### Optional GPU Acceleration (pyclesperanto)
+
+Fast4DReg can use [pyclesperanto](https://github.com/clEsperanto/pyclesperanto_prototype) to accelerate all transformations (translations and rotations) on OpenCL GPUs. This is **automatic** when available.
+
+```bash
+pip install pyclesperanto-prototype
+```
+
+Behavior summary:
+- **Auto-detects** OpenCL devices on import
+- **Prefers NVIDIA** GPUs over Intel GPUs when multiple are available
+- **Gracefully falls back to CPU** if GPU is not available or runs out of VRAM
+
+Check the current backend in Python:
+
+```python
+from napari_fast4dreg import get_gpu_info
+print(get_gpu_info())  # e.g., "GPU (NVIDIA RTX 1000)" or "CPU (scipy)"
 ```
 
 ## Usage 

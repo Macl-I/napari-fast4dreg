@@ -1,5 +1,16 @@
 """
 Tests for the programmatic API (register_image, register_image_from_file).
+
+Test categories:
+1. Synthetic data tests - Fast unit tests with small generated images
+2. Real data tests - Integration tests using actual example files
+   - Single-channel file: TZYX format (21 timepoints, 64 z-slices, 128x128)
+   - Multi-channel file: TZCYX format (21 timepoints, 64 z-slices, 2 channels, 128x128)
+   
+Real data tests are marked with @pytest.mark.slow and can be run with:
+    pytest -m slow
+Or skipped with:
+    pytest -m "not slow"
 """
 import numpy as np
 import pytest
@@ -270,3 +281,281 @@ def test_api_aliases():
     # Check aliases exist
     assert fast4dreg is register_image
     assert register is register_image
+
+
+# ============================================================================
+# REAL DATA TESTS - Using actual example files
+# ============================================================================
+
+@pytest.fixture
+def example_files_dir():
+    """Get path to example_files directory."""
+    # Assuming tests are run from package root or within src structure
+    test_dir = Path(__file__).parent
+    example_dir = test_dir.parent.parent.parent.parent / "example_files"
+    
+    # Alternative: try to find it relative to common locations
+    if not example_dir.exists():
+        example_dir = Path.cwd() / "example_files"
+    
+    if not example_dir.exists():
+        pytest.skip("example_files directory not found")
+    
+    return example_dir
+
+
+@pytest.fixture
+def single_channel_file(example_files_dir):
+    """Get single-channel example file (TZYX format)."""
+    file_path = example_files_dir / "xtitched_organoid_timelapse_ch0_cytosol_ch1_nuclei-1.tif"
+    if not file_path.exists():
+        pytest.skip(f"Single-channel example file not found: {file_path}")
+    return file_path
+
+
+@pytest.fixture
+def multi_channel_file(example_files_dir):
+    """Get multi-channel example file (TZCYX format)."""
+    file_path = example_files_dir / "xtitched_organoid_timelapse_ch0_cytosol_ch1_nuclei.tif"
+    if not file_path.exists():
+        pytest.skip(f"Multi-channel example file not found: {file_path}")
+    return file_path
+
+
+@pytest.mark.slow
+def test_real_data_single_channel_basic(single_channel_file, temp_output_dir):
+    """Test registration with real single-channel data - basic XY correction only."""
+    result = register_image_from_file(
+        single_channel_file,
+        axis_order="TZYX",  # Single channel: T, Z, Y, X
+        ref_channel=0,
+        output_dir=temp_output_dir / "single_channel_basic",
+        correct_xy=True,
+        correct_z=False,
+        correct_rotation=False,
+        crop_output=False,
+        return_drifts=True,
+    )
+    
+    # Check result structure
+    assert 'registered_image' in result
+    assert 'xy_drift' in result
+    assert 'output_path' in result
+    
+    # Check output shape - should be CTZYX (1, 21, 64, 128, 128)
+    registered = result['registered_image']
+    assert registered.ndim == 5
+    assert registered.shape[0] == 1  # Single channel
+    assert registered.shape[1] == 21  # 21 timepoints
+    assert registered.shape[2] == 64  # 64 z-slices
+    
+    # Check XY drift shape
+    assert result['xy_drift'].shape == (21, 2)
+    
+    # Verify drift was detected (should not all be zero)
+    assert not np.allclose(result['xy_drift'], 0)
+    
+    # Check output file exists
+    assert result['output_path'].exists()
+
+
+@pytest.mark.slow
+def test_real_data_single_channel_full(single_channel_file, temp_output_dir):
+    """Test registration with real single-channel data - all corrections."""
+    result = register_image_from_file(
+        single_channel_file,
+        axis_order="TZYX",
+        ref_channel=0,
+        output_dir=temp_output_dir / "single_channel_full",
+        correct_xy=True,
+        correct_z=True,
+        correct_rotation=True,  # Sequential XY→ZX→ZY
+        crop_output=False,
+        projection_type='average',
+        reference_mode='relative',
+        return_drifts=True,
+    )
+    
+    # Check all drift data is present
+    assert 'xy_drift' in result
+    assert 'z_drift' in result
+    assert 'rotation_xy' in result
+    assert 'rotation_zx' in result
+    assert 'rotation_zy' in result
+    
+    # Check drift shapes
+    assert result['xy_drift'].shape == (21, 2)
+    assert result['z_drift'].shape == (21, 2)
+    assert result['rotation_xy'].shape == (21,)
+    assert result['rotation_zx'].shape == (21,)
+    assert result['rotation_zy'].shape == (21,)
+    
+    # Check output shape maintained
+    registered = result['registered_image']
+    assert registered.shape[0] == 1  # Single channel
+    assert registered.shape[1] == 21  # 21 timepoints
+
+
+@pytest.mark.slow
+def test_real_data_multi_channel_ch0(multi_channel_file, temp_output_dir):
+    """Test registration with real multi-channel data using channel 0."""
+    result = register_image_from_file(
+        multi_channel_file,
+        axis_order="TZCYX",  # ImageJ format: T, Z, Channels, Y, X
+        ref_channel=0,  # Use channel 0 (cytosol)
+        output_dir=temp_output_dir / "multi_channel_ch0",
+        correct_xy=True,
+        correct_z=True,
+        correct_rotation=False,  # Skip rotation for speed
+        crop_output=False,
+        return_drifts=True,
+    )
+    
+    # Check result structure
+    assert 'registered_image' in result
+    assert 'xy_drift' in result
+    assert 'z_drift' in result
+    
+    # Check output shape - should be CTZYX (2, 21, 64, 128, 128)
+    registered = result['registered_image']
+    assert registered.ndim == 5
+    assert registered.shape[0] == 2  # 2 channels
+    assert registered.shape[1] == 21  # 21 timepoints
+    assert registered.shape[2] == 64  # 64 z-slices
+    
+    # Check drift shapes
+    assert result['xy_drift'].shape == (21, 2)
+    assert result['z_drift'].shape == (21, 2)
+
+
+@pytest.mark.slow
+def test_real_data_multi_channel_ch1(multi_channel_file, temp_output_dir):
+    """Test registration with real multi-channel data using channel 1 (nuclei)."""
+    result = register_image_from_file(
+        multi_channel_file,
+        axis_order="TZCYX",
+        ref_channel=1,  # Use channel 1 (nuclei)
+        output_dir=temp_output_dir / "multi_channel_ch1",
+        correct_xy=True,
+        correct_z=True,
+        correct_rotation=False,
+        projection_type='max',  # Max projection often good for nuclei
+        return_drifts=True,
+    )
+    
+    # Check results
+    assert 'registered_image' in result
+    assert result['registered_image'].shape[0] == 2  # 2 channels preserved
+    assert result['xy_drift'].shape == (21, 2)
+    
+    # Verify drift was detected
+    assert not np.allclose(result['xy_drift'], 0)
+
+
+@pytest.mark.slow
+def test_real_data_multi_channel_both_channels(multi_channel_file, temp_output_dir):
+    """Test registration using both channels as reference with normalization."""
+    result = register_image_from_file(
+        multi_channel_file,
+        axis_order="TZCYX",
+        ref_channel="0,1",  # Use both channels
+        normalize_channels=True,  # Normalize before combining
+        output_dir=temp_output_dir / "multi_channel_both",
+        correct_xy=True,
+        correct_z=False,
+        correct_rotation=False,
+        return_drifts=True,
+    )
+    
+    # Check results
+    assert 'registered_image' in result
+    assert result['registered_image'].shape[0] == 2  # Channels preserved
+    assert result['xy_drift'].shape == (21, 2)
+
+
+@pytest.mark.slow
+def test_real_data_sequential_rotation_correction(single_channel_file, temp_output_dir):
+    """Test that sequential rotation correction works with real data."""
+    # Run with progress callback to verify sequential steps
+    progress_messages = []
+    
+    def track_progress(msg):
+        progress_messages.append(msg)
+    
+    result = register_image_from_file(
+        single_channel_file,
+        axis_order="TZYX",
+        ref_channel=0,
+        output_dir=temp_output_dir / "sequential_rotation",
+        correct_xy=True,
+        correct_z=True,
+        correct_rotation=True,
+        progress_callback=track_progress,
+        return_drifts=True,
+    )
+    
+    # Check that rotation steps were executed in sequence
+    rotation_steps = [msg for msg in progress_messages if 'rotation' in msg.lower()]
+    
+    # Should see alpha, beta, gamma in sequence
+    assert any('alpha' in msg.lower() or 'xy plane' in msg.lower() for msg in rotation_steps)
+    assert any('beta' in msg.lower() or 'zx plane' in msg.lower() for msg in rotation_steps)
+    assert any('gamma' in msg.lower() or 'zy plane' in msg.lower() for msg in rotation_steps)
+    
+    # Check all rotation data is present
+    assert 'rotation_xy' in result
+    assert 'rotation_zx' in result
+    assert 'rotation_zy' in result
+    
+    # Check shapes
+    assert result['rotation_xy'].shape == (21,)
+    assert result['rotation_zx'].shape == (21,)
+    assert result['rotation_zy'].shape == (21,)
+
+
+@pytest.mark.slow
+def test_real_data_projection_types(single_channel_file, temp_output_dir):
+    """Test different projection types with real data."""
+    projection_types = ['average', 'max']  # Test subset for speed
+    
+    for proj_type in projection_types:
+        result = register_image_from_file(
+            single_channel_file,
+            axis_order="TZYX",
+            ref_channel=0,
+            output_dir=temp_output_dir / f"proj_{proj_type}",
+            correct_xy=True,
+            correct_z=False,
+            correct_rotation=False,
+            projection_type=proj_type,
+            return_drifts=True,
+        )
+        
+        # Should succeed and detect some drift
+        assert 'registered_image' in result
+        assert result['xy_drift'].shape == (21, 2)
+
+
+@pytest.mark.slow
+def test_real_data_reference_modes(single_channel_file, temp_output_dir):
+    """Test different reference modes with real data."""
+    for ref_mode in ['relative', 'first_frame']:
+        result = register_image_from_file(
+            single_channel_file,
+            axis_order="TZYX",
+            ref_channel=0,
+            output_dir=temp_output_dir / f"ref_{ref_mode}",
+            correct_xy=True,
+            correct_z=False,
+            correct_rotation=False,
+            reference_mode=ref_mode,
+            return_drifts=True,
+        )
+        
+        # Should succeed
+        assert 'registered_image' in result
+        assert result['xy_drift'].shape == (21, 2)
+        
+        if ref_mode == 'first_frame':
+            # First frame should have zero drift
+            assert np.allclose(result['xy_drift'][0], 0)

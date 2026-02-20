@@ -40,6 +40,9 @@ from ._fast4Dreg_functions import (
     get_z_drift,
     apply_z_drift,
     get_rotation,
+    get_rotation_alpha,
+    get_rotation_beta,
+    get_rotation_gamma,
     apply_alpha_drift,
     apply_beta_drift,
     apply_gamma_drift,
@@ -86,7 +89,9 @@ def register_image(
     correct_z : bool, default=True
         Apply Z (axial) drift correction.
     correct_rotation : bool, default=True
-        Apply 3D rotation correction (XY, ZX, ZY planes).
+        Apply 3D rotation correction sequentially (XY, then ZX, then ZY planes).
+        Each rotation is detected and applied on the already-corrected data from
+        the previous step for improved accuracy.
     crop_output : bool, default=False
         Crop output to remove invalid regions after correction.
     projection_type : str, default='average'
@@ -249,31 +254,52 @@ def register_image(
         tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
         data = tmp_data
     
-    # Rotation correction
+    # Rotation correction - Sequential estimation and application
     if correct_rotation:
-        _progress("Detecting 3D rotation...")
-        alpha_xy, beta_zx, gamma_zy = get_rotation(
+        # Alpha (XY plane) rotation
+        _progress("Detecting XY plane rotation (alpha)...")
+        alpha_xy = get_rotation_alpha(
             data, ref_channel,
             projection_type=projection_type,
             reference_mode=reference_mode,
             normalize_channels=normalize_channels
         )
         drift_data['rotation_xy'] = alpha_xy
-        drift_data['rotation_zx'] = beta_zx
-        drift_data['rotation_zy'] = gamma_zy
         
-        _progress("Applying XY rotation...")
+        _progress("Applying XY rotation (alpha)...")
         tmp_data = apply_alpha_drift(data, alpha_xy)
         tmp_data = write_tmp_data_to_disk(str(tmp_path_write), tmp_data, new_shape)
         tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
+        data = tmp_data
         
-        _progress("Applying ZX rotation...")
-        tmp_data = apply_beta_drift(tmp_data, beta_zx)
+        # Beta (ZX plane) rotation
+        _progress("Detecting ZX plane rotation (beta)...")
+        beta_zx = get_rotation_beta(
+            data, ref_channel,
+            projection_type=projection_type,
+            reference_mode=reference_mode,
+            normalize_channels=normalize_channels
+        )
+        drift_data['rotation_zx'] = beta_zx
+        
+        _progress("Applying ZX rotation (beta)...")
+        tmp_data = apply_beta_drift(data, beta_zx)
         tmp_data = write_tmp_data_to_disk(str(tmp_path_write), tmp_data, new_shape)
         tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
+        data = tmp_data
         
-        _progress("Applying ZY rotation...")
-        tmp_data = apply_gamma_drift(tmp_data, gamma_zy)
+        # Gamma (ZY plane) rotation
+        _progress("Detecting ZY plane rotation (gamma)...")
+        gamma_zy = get_rotation_gamma(
+            data, ref_channel,
+            projection_type=projection_type,
+            reference_mode=reference_mode,
+            normalize_channels=normalize_channels
+        )
+        drift_data['rotation_zy'] = gamma_zy
+        
+        _progress("Applying ZY rotation (gamma)...")
+        tmp_data = apply_gamma_drift(data, gamma_zy)
         tmp_data = write_tmp_data_to_disk(str(tmp_path_write), tmp_data, new_shape)
         tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
         data = tmp_data
@@ -364,11 +390,13 @@ def register_image_from_file(
     elif filepath.suffix == '.npy':
         image = np.load(str(filepath))
     elif filepath.suffix == '.zarr' or filepath.is_dir():
-        import zarr
         image = da.from_zarr(str(filepath))
     else:
         raise ValueError(f"Unsupported file format: {filepath.suffix}")
     
+    if type(image) is da.ndarray:
+        np = da
+
     # Reorder axes to CTZYX
     if axis_order != "CTZYX":
         # Simple reordering logic

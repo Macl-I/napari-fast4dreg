@@ -21,9 +21,11 @@ import napari.layers
 from ._fast4Dreg_functions import (
     get_xy_drift, apply_xy_drift,
     get_z_drift, apply_z_drift,
-    get_rotation, apply_alpha_drift, apply_beta_drift, apply_gamma_drift,
+    get_rotation, get_rotation_alpha, get_rotation_beta, get_rotation_gamma,
+    apply_alpha_drift, apply_beta_drift, apply_gamma_drift,
     crop_data,
     read_tmp_data, write_tmp_data_to_disk,
+    get_gpu_info,
 )
 
 if TYPE_CHECKING:
@@ -152,6 +154,15 @@ class Fast4DRegWidget(Container):
             value=True
         )
         
+        # GPU info display
+        self.gpu_info_label = create_widget(
+            annotation=str,
+            label="Processing Backend",
+            name="gpu_info",
+            value=get_gpu_info(),
+            options={"enabled": False}
+        )
+        
         # Progress bar and status
         self.status_label = create_widget(
             annotation=str,
@@ -174,15 +185,18 @@ class Fast4DRegWidget(Container):
         self.extend([
             self.image_layer,
             self.axes,
-            self.ref_channel,            self.normalize_channels,
+            self.ref_channel,
+            self.normalize_channels,
             self.projection_type,
-            self.reference_mode,            self.output_path,
+            self.reference_mode,
+            self.output_path,
             self.multichannel_mode,
             self.correct_xy,
             self.correct_z,
             self.correct_rotation,
             self.crop_output,
             self.export_data,
+            self.gpu_info_label,
             self.status_label,
             self.progress_bar,
             self.run_btn,
@@ -344,7 +358,7 @@ class Fast4DRegWidget(Container):
         if crop_output:
             total_steps += 3  # crop, save, reload
         if correct_rotation:
-            total_steps += 6  # detect, apply alpha, write, apply beta, write, apply gamma+write
+            total_steps += 9  # detect alpha, apply alpha, write, detect beta, apply beta, write, detect gamma, apply gamma, write
         if export_data:
             total_steps += 2  # CSV export, plot generation
         total_steps += 2  # final export (compute + save)
@@ -497,10 +511,11 @@ class Fast4DRegWidget(Container):
             tmp_data = read_tmp_data(tmp_path_read, new_shape)
             current_step += 1
         
-        # Rotation correction
+        # Rotation correction - Sequential estimation and application
         if correct_rotation:
-            yield (current_step, total_steps, f"Detecting 3D rotation ({projection_type}, {reference_mode})...")
-            alpha_xy, beta_zx, gamma_zy = get_rotation(tmp_data, ref_channel, projection_type_lower, reference_mode_lower, normalize_channels)
+            # Alpha (XY plane) rotation
+            yield (current_step, total_steps, f"Detecting XY plane rotation (alpha) ({projection_type}, {reference_mode})...")
+            alpha_xy = get_rotation_alpha(tmp_data, ref_channel, projection_type_lower, reference_mode_lower, normalize_channels)
             current_step += 1
             
             yield (current_step, total_steps, "Applying XY plane rotation (alpha)...")
@@ -512,6 +527,11 @@ class Fast4DRegWidget(Container):
             tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
             current_step += 1
             
+            # Beta (ZX plane) rotation
+            yield (current_step, total_steps, f"Detecting ZX plane rotation (beta) ({projection_type}, {reference_mode})...")
+            beta_zx = get_rotation_beta(tmp_data, ref_channel, projection_type_lower, reference_mode_lower, normalize_channels)
+            current_step += 1
+            
             yield (current_step, total_steps, "Applying ZX plane rotation (beta)...")
             tmp_data = apply_beta_drift(tmp_data, beta_zx)
             current_step += 1
@@ -521,9 +541,18 @@ class Fast4DRegWidget(Container):
             tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
             current_step += 1
             
+            # Gamma (ZY plane) rotation
+            yield (current_step, total_steps, f"Detecting ZY plane rotation (gamma) ({projection_type}, {reference_mode})...")
+            gamma_zy = get_rotation_gamma(tmp_data, ref_channel, projection_type_lower, reference_mode_lower, normalize_channels)
+            current_step += 1
+            
             yield (current_step, total_steps, "Applying ZY plane rotation (gamma)...")
             tmp_data = apply_gamma_drift(tmp_data, gamma_zy)
+            current_step += 1
+            
+            yield (current_step, total_steps, "Saving gamma-corrected data...")
             tmp_data = write_tmp_data_to_disk(tmp_path_write, tmp_data, new_shape)
+            tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
             current_step += 1
         
         # Export CSV and plots

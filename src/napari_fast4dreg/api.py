@@ -393,7 +393,7 @@ def register_image_from_file(
     else:
         raise ValueError(f"Unsupported file format: {filepath.suffix}")
 
-    if type(image) is da.ndarray:
+    if type(image) is da.array:
         np = da
 
     # Reorder axes to CTZYX

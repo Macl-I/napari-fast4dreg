@@ -393,19 +393,24 @@ def register_image_from_file(
     else:
         raise ValueError(f"Unsupported file format: {filepath.suffix}")
 
-    if type(image) is da.array:
-        np = da
-
     # Reorder axes to CTZYX
     if axis_order != "CTZYX":
         # Simple reordering logic
         if axis_order == "TZCYX":
             # Swap T and C, then T and Z
-            image = np.swapaxes(image, 0, 2)  # CTZYX
-            image = np.swapaxes(image, 1, 2)  # CTZYX
+            # Use image-specific method (works for both numpy and dask)
+            if isinstance(image, da.Array):
+                image = da.swapaxes(image, 0, 2)  # CTZYX
+                image = da.swapaxes(image, 1, 2)  # CTZYX
+            else:
+                image = np.swapaxes(image, 0, 2)  # CTZYX
+                image = np.swapaxes(image, 1, 2)  # CTZYX
         elif axis_order == "TZYX":
-            # Add channel dimension
-            image = image[:, np.newaxis, ...]  # CTZYX
+            # Add channel dimension at position 0
+            if isinstance(image, da.Array):
+                image = image[da.newaxis, :, ...]  # CTZYX
+            else:
+                image = image[np.newaxis, :, ...]  # CTZYX
         else:
             warnings.warn(
                 f"Axis order '{axis_order}' not recognized. "

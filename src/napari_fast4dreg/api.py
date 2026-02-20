@@ -27,28 +27,27 @@ Example usage:
     >>> z_drift = result['z_drift']
 """
 
-import numpy as np
-import dask.array as da
-from pathlib import Path
 import shutil
-from typing import Union, Optional, Callable, Dict, Any
 import warnings
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional, Union
+
+import dask.array as da
+import numpy as np
 
 from ._fast4Dreg_functions import (
-    get_xy_drift,
-    apply_xy_drift,
-    get_z_drift,
-    apply_z_drift,
-    get_rotation,
-    get_rotation_alpha,
-    get_rotation_beta,
-    get_rotation_gamma,
     apply_alpha_drift,
     apply_beta_drift,
     apply_gamma_drift,
+    apply_xy_drift,
+    apply_z_drift,
     crop_data,
+    get_rotation_alpha,
+    get_rotation_beta,
+    get_rotation_gamma,
+    get_xy_drift,
+    get_z_drift,
     write_tmp_data_to_disk,
-    read_tmp_data,
 )
 
 
@@ -166,16 +165,16 @@ def register_image(
     --------
     register_image_from_file : Load and register image from file
     """
-    
+
     def _progress(message: str):
         """Internal progress callback wrapper."""
         if progress_callback is not None:
             progress_callback(message)
-    
+
     # Setup paths
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Validate shape early (before dask conversion)
     if isinstance(image, np.ndarray):
         if image.ndim != 5:
@@ -195,48 +194,48 @@ def register_image(
                 f"Image must be 5D (CTZYX format), got shape {data.shape}. "
                 f"If your data has different dimensions, reshape it first."
             )
-    
+
     _progress(f"Input shape (CTZYX): {data.shape}")
-    
+
     # Setup temporary storage
     tmp_path_1 = output_dir / "tmp_data_1.zarr"
     tmp_path_2 = output_dir / "tmp_data_2.zarr"
     tmp_path_read = tmp_path_1
     tmp_path_write = tmp_path_2
-    
+
     # Clean up old temp files
     for tmp_path in [tmp_path_1, tmp_path_2]:
         if tmp_path.exists():
             shutil.rmtree(tmp_path)
-    
+
     # Track drift values
     drift_data = {}
-    
+
     # Get chunking
     new_shape = data.chunksize
-    
+
     # Write initial data
     _progress("Writing to temporary storage...")
     data = write_tmp_data_to_disk(str(tmp_path_write), data, new_shape)
     tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
-    
+
     # XY correction
     if correct_xy:
         _progress("Detecting XY drift...")
         xy_drift = get_xy_drift(
-            data, ref_channel, 
+            data, ref_channel,
             projection_type=projection_type,
             reference_mode=reference_mode,
             normalize_channels=normalize_channels
         )
         drift_data['xy_drift'] = xy_drift
-        
+
         _progress("Applying XY correction...")
         tmp_data = apply_xy_drift(data, xy_drift)
         tmp_data = write_tmp_data_to_disk(str(tmp_path_write), tmp_data, new_shape)
         tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
         data = tmp_data
-    
+
     # Z correction
     if correct_z:
         _progress("Detecting Z drift...")
@@ -247,13 +246,13 @@ def register_image(
             normalize_channels=normalize_channels
         )
         drift_data['z_drift'] = z_drift
-        
+
         _progress("Applying Z correction...")
         tmp_data = apply_z_drift(data, z_drift)
         tmp_data = write_tmp_data_to_disk(str(tmp_path_write), tmp_data, new_shape)
         tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
         data = tmp_data
-    
+
     # Rotation correction - Sequential estimation and application
     if correct_rotation:
         # Alpha (XY plane) rotation
@@ -265,13 +264,13 @@ def register_image(
             normalize_channels=normalize_channels
         )
         drift_data['rotation_xy'] = alpha_xy
-        
+
         _progress("Applying XY rotation (alpha)...")
         tmp_data = apply_alpha_drift(data, alpha_xy)
         tmp_data = write_tmp_data_to_disk(str(tmp_path_write), tmp_data, new_shape)
         tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
         data = tmp_data
-        
+
         # Beta (ZX plane) rotation
         _progress("Detecting ZX plane rotation (beta)...")
         beta_zx = get_rotation_beta(
@@ -281,13 +280,13 @@ def register_image(
             normalize_channels=normalize_channels
         )
         drift_data['rotation_zx'] = beta_zx
-        
+
         _progress("Applying ZX rotation (beta)...")
         tmp_data = apply_beta_drift(data, beta_zx)
         tmp_data = write_tmp_data_to_disk(str(tmp_path_write), tmp_data, new_shape)
         tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
         data = tmp_data
-        
+
         # Gamma (ZY plane) rotation
         _progress("Detecting ZY plane rotation (gamma)...")
         gamma_zy = get_rotation_gamma(
@@ -297,24 +296,24 @@ def register_image(
             normalize_channels=normalize_channels
         )
         drift_data['rotation_zy'] = gamma_zy
-        
+
         _progress("Applying ZY rotation (gamma)...")
         tmp_data = apply_gamma_drift(data, gamma_zy)
         tmp_data = write_tmp_data_to_disk(str(tmp_path_write), tmp_data, new_shape)
         tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
         data = tmp_data
-    
+
     # Crop if requested
     if crop_output and correct_xy and correct_z:
         _progress("Cropping output...")
         data = crop_data(data, drift_data.get('xy_drift'), drift_data.get('z_drift'))
         data = write_tmp_data_to_disk(str(tmp_path_write), data, new_shape)
         tmp_path_read, tmp_path_write = tmp_path_write, tmp_path_read
-    
+
     # Compute final result
     _progress("Computing registered image...")
     registered_image = data.compute()
-    
+
     # Save to Zarr
     _progress("Saving to Zarr...")
     zarr_path = output_dir / "registered.zarr"
@@ -324,25 +323,25 @@ def register_image(
     else:
         chunks = None
     da.from_array(registered_image, chunks=chunks).to_zarr(str(zarr_path), overwrite=True)
-    
+
     # Clean up temp files
     if not keep_temp_files:
         _progress("Cleaning up temporary files...")
         for tmp_path in [tmp_path_1, tmp_path_2]:
             if tmp_path.exists():
                 shutil.rmtree(tmp_path)
-    
+
     _progress("Registration complete!")
-    
+
     # Build result dictionary
     result = {
         'registered_image': registered_image,
         'output_path': zarr_path,
     }
-    
+
     if return_drifts:
         result.update(drift_data)
-    
+
     return result
 
 
@@ -381,9 +380,9 @@ def register_image_from_file(
     ... )
     """
     import tifffile
-    
+
     filepath = Path(filepath)
-    
+
     # Load based on extension
     if filepath.suffix in ['.tif', '.tiff']:
         image = tifffile.imread(str(filepath))
@@ -393,7 +392,7 @@ def register_image_from_file(
         image = da.from_zarr(str(filepath))
     else:
         raise ValueError(f"Unsupported file format: {filepath.suffix}")
-    
+
     if type(image) is da.ndarray:
         np = da
 
@@ -412,7 +411,7 @@ def register_image_from_file(
                 f"Axis order '{axis_order}' not recognized. "
                 f"Please manually reorder to CTZYX format."
             )
-    
+
     return register_image(image, **kwargs)
 
 

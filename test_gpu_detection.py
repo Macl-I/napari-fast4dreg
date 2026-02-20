@@ -33,7 +33,7 @@ print("="*70)
 
 if f4d.PYCLESPERANTO_AVAILABLE:
     print("\n✓ pyclesperanto is installed")
-    
+
     # Try to get more GPU details
     try:
         import pyclesperanto_prototype as cle
@@ -43,13 +43,13 @@ if f4d.PYCLESPERANTO_AVAILABLE:
         for i, device in enumerate(devices, 1):
             marker = "  [SELECTED] " if f4d.USE_GPU_ACCELERATION and device in f4d.GPU_INFO else "           "
             print(f"{marker}{i}. {device}")
-        
+
         if f4d.USE_GPU_ACCELERATION:
             print("\n✓ GPU acceleration ENABLED automatically")
             print(f"  Selected device: {f4d.GPU_INFO}")
         else:
             print("\n✗ GPU acceleration NOT enabled (check logs above for reason)")
-            
+
     except Exception as e:
         print(f"\n⚠ Error getting GPU details: {e}")
 else:

@@ -4,21 +4,19 @@
 #%%
 # Imports
 # Essentials
-import numpy as np
+
 import dask
 import dask.array as da
-from dask.diagnostics import ProgressBar
 import matplotlib.pyplot as plt
+import numpy as np
+import zarr
+from dask.diagnostics import ProgressBar
+from scipy.ndimage import affine_transform, rotate
 from skimage.registration import phase_cross_correlation
 from skimage.transform import warp_polar
-from skimage.transform import AffineTransform
-from scipy.ndimage import affine_transform, rotate, shift
-import zarr
-import shutil
+
 # Utility
 from tqdm import tqdm
-import sys
-import os
 
 # Optional GPU acceleration with pyclesperanto
 try:
@@ -50,7 +48,7 @@ def _detect_and_select_gpu():
     """
     if not PYCLESPERANTO_AVAILABLE:
         return False, None, "CPU (scipy)"
-    
+
     try:
         # Get all available devices
         available_devices = cle.available_device_names()
@@ -61,11 +59,11 @@ def _detect_and_select_gpu():
 
         if not available_devices:
             return False, None, "CPU (scipy) - No GPU devices found"
-        
+
         # Prefer NVIDIA over Intel over others
         nvidia_devices = [d for d in available_devices if 'nvidia' in d.lower() or 'geforce' in d.lower() or 'rtx' in d.lower() or 'gtx' in d.lower()]
         intel_devices = [d for d in available_devices if 'intel' in d.lower()]
-        
+
         selected_device = None
         if nvidia_devices:
             selected_device = nvidia_devices[0]
@@ -76,13 +74,13 @@ def _detect_and_select_gpu():
         else:
             selected_device = available_devices[0]
             print(f"Found GPU: {selected_device}")
-        
+
         # Try to select the device
         cle.select_device(selected_device)
         device_info = f"GPU ({selected_device})"
         print(f"Successfully selected GPU: {selected_device}")
         return True, selected_device, device_info
-        
+
     except Exception as e:
         print(f"Warning: Failed to initialize GPU: {e}")
         return False, None, "CPU (scipy) - GPU initialization failed"
@@ -112,14 +110,14 @@ def set_gpu_acceleration(enabled=True):
     bool : True if GPU acceleration was successfully enabled, False otherwise
     """
     global USE_GPU_ACCELERATION, GPU_INFO
-    
+
     if enabled and not PYCLESPERANTO_AVAILABLE:
         print("Warning: pyclesperanto_prototype not available. Install with: pip install pyclesperanto-prototype")
         print("Falling back to CPU (scipy) processing.")
         USE_GPU_ACCELERATION = False
         GPU_INFO = "CPU (scipy)"
         return False
-    
+
     if enabled:
         # Try to detect and select best GPU
         success, device_name, device_info = _detect_and_select_gpu()
@@ -205,14 +203,14 @@ def get_reference_data(_data, ref_channel, normalize_channels=False):
         ref_channels = list(ref_channel)
     else:
         ref_channels = [int(ref_channel)]
-    
+
     if len(ref_channels) == 1:
         # Single channel
         return _data[ref_channels[0]]
     else:
         # Multiple channels - sum them up
         print(f"Using multiple reference channels: {ref_channels}")
-        
+
         if normalize_channels:
             print("Normalizing channels before summation")
             # Normalize each channel to 0-1 range before summing
@@ -223,7 +221,7 @@ def get_reference_data(_data, ref_channel, normalize_channels=False):
                 ch_min = da.min(channel_data)
                 ch_max = da.max(channel_data)
                 normalized = (channel_data - ch_min) / (ch_max - ch_min + 1e-10)
-                
+
                 if combined is None:
                     combined = normalized
                 else:
@@ -255,12 +253,12 @@ def get_xy_drift(_data, ref_channel, projection_type='average', reference_mode='
     # correct XY drift
     print(f'Determining drift in XY (projection: {projection_type}, reference: {reference_mode})')
     shifts, error, phasediff = [], [], []
-    
+
     if reference_mode == 'relative':
         # Relative mode: compare each frame to the next
-        for t in tqdm(range(len(xy_movie)-1)):        
+        for t in tqdm(range(len(xy_movie)-1)):
             s, e, p = phase_cross_correlation(xy_movie[t],
-                                                xy_movie[t+1], 
+                                                xy_movie[t+1],
                                                 normalization=None)
             shifts.append(s)
             error.append(e)
@@ -270,18 +268,18 @@ def get_xy_drift(_data, ref_channel, projection_type='average', reference_mode='
         shifts_xy.insert(0,[0,0])
     else:
         # First frame mode: compare all frames to the first frame
-        for t in tqdm(range(1, len(xy_movie))):        
+        for t in tqdm(range(1, len(xy_movie))):
             s, e, p = phase_cross_correlation(xy_movie[0],
-                                                xy_movie[t], 
+                                                xy_movie[t],
                                                 normalization=None)
             shifts.append(s)
             error.append(e)
             phasediff.append(p)
         shifts_xy = np.array(shifts).tolist()
-        shifts_xy.insert(0,[0,0]) 
-        
+        shifts_xy.insert(0,[0,0])
+
     shifts_xy = np.asarray(shifts_xy)
-    
+
     plt.title('XY-Drift')
     plt.plot(shifts_xy[:,0], label = 'x')
     plt.plot(shifts_xy[:,1], label = 'y')
@@ -308,12 +306,12 @@ def get_z_drift(_data, ref_channel, projection_type='average', reference_mode='r
     # correct Z drift
     print(f'Determining drift in Z (projection: {projection_type}, reference: {reference_mode})')
     shifts, error, phasediff = [], [], []
-    
+
     if reference_mode == 'relative':
         # Relative mode: compare each frame to the next
-        for t in tqdm(range(len(z_movie)-1)):        
+        for t in tqdm(range(len(z_movie)-1)):
             s, e, p = phase_cross_correlation(z_movie[t],
-                                                z_movie[t+1], 
+                                                z_movie[t+1],
                                                 normalization=None)
             shifts.append(s)
             error.append(e)
@@ -325,9 +323,9 @@ def get_z_drift(_data, ref_channel, projection_type='average', reference_mode='r
         shifts_z.insert(0,[0,0])
     else:
         # First frame mode: compare all frames to the first frame
-        for t in tqdm(range(1, len(z_movie))):        
+        for t in tqdm(range(1, len(z_movie))):
             s, e, p = phase_cross_correlation(z_movie[0],
-                                                z_movie[t], 
+                                                z_movie[t],
                                                 normalization=None)
             shifts.append(s)
             error.append(e)
@@ -337,7 +335,7 @@ def get_z_drift(_data, ref_channel, projection_type='average', reference_mode='r
             i[1] = 0
         shifts_z = shifts_z.tolist()
         shifts_z.insert(0,[0,0])
-    
+
     print(f"Shape of shifts: {np.asarray(shifts).shape}")
     print(f"Shifts: {shifts}")
     print(f"Errors: {error}")
@@ -362,7 +360,7 @@ def apply_xy_drift(_data, xy_drift):
 
     # Swap axes to iterate over time which aligns with chunks
     _data = da.swapaxes(_data, 0,1)
-    
+
     print('Scheduling tasks...')
     _translated_data = []
     for t,T in tqdm(enumerate(_data)):
@@ -375,9 +373,9 @@ def apply_xy_drift(_data, xy_drift):
     _data_out = da.swapaxes(_data_out, 0,1)
 
     print('XY-shift has been scheduled.')
-    
+
     return _data_out
-    
+
 
 
 def translate_z_stack(_image, _shift, transform_type='z'):
@@ -390,7 +388,7 @@ def translate_z_stack(_image, _shift, transform_type='z'):
     #   'beta': ZX plane rotation (around Y axis) - angle in degrees
     #   'gamma': ZY plane rotation (around X axis) - angle in degrees
     # Applies transformations to the entire z-stack at once (3D transformation, not plane-by-plane)
-    
+
     # Choose backend based on global flag
     if USE_GPU_ACCELERATION and PYCLESPERANTO_AVAILABLE:
         return _translate_z_stack_gpu(_image, _shift, transform_type)
@@ -467,7 +465,7 @@ def _translate_z_stack_cpu(_image, _shift, transform_type):
 def _translate_z_stack_gpu(_image, _shift, transform_type):
     """GPU implementation using pyclesperanto."""
     _image_out = []
-    
+
     def _apply_gpu_transform(img_data, shift_params, ttype):
         """Helper to apply GPU transformation to numpy array."""
         global USE_GPU_ACCELERATION, GPU_INFO
@@ -524,20 +522,20 @@ def _translate_z_stack_gpu(_image, _shift, transform_type):
                 result = _translate_z_stack_cpu(img_data, shift_params, ttype)
                 return result.astype(img_data.dtype)
             raise
-    
+
     for c, C in enumerate(_image):
         # C has shape (z, y, x) and is a dask array
         delayed_result = dask.delayed(_apply_gpu_transform)(C, _shift, transform_type)
         _image_out.append(da.from_delayed(delayed_result, shape=C.shape, dtype=C.dtype))
-    
+
     return da.stack(_image_out)
 
 
 def apply_z_drift(_data, z_drift):
-    
+
     # Swap axes to iterate over time which aligns with chunks
     _data = da.swapaxes(_data, 0,1)
-    
+
     print('Scheduling tasks...')
     _translated_data = []
     for t,T in tqdm(enumerate(_data)):
@@ -549,7 +547,7 @@ def apply_z_drift(_data, z_drift):
     _data_out = da.swapaxes(_data_out, 0,1)
 
     print('Z-shift has been scheduled.')
-    
+
     return _data_out
 
 def crop_data(data, xy_drift, z_drift):
@@ -568,19 +566,19 @@ def get_rotation_alpha(data, ref_channel, projection_type='average', reference_m
     # Rechunk to ensure T dimension is fully loaded
     data_ref = get_reference_data(data, ref_channel, normalize_channels)
     data_ref = data_ref.rechunk({0: -1, 1: 'auto', 2: 'auto', 3: 'auto'})
-    
+
     # Get rotation in XY plane (projecting over Z)
     xy_movie = np.array(apply_projection(data_ref, axis=1, projection_type=projection_type))
     radius_xy = int(min(da.shape(data)[3], da.shape(data)[4])/2)
 
     print(f'Determining rotation in XY plane (projection: {projection_type}, reference: {reference_mode})')
-    
+
     # XY rotation detection
     shifts_xy = []
     if reference_mode == 'relative':
         for t in tqdm(range(len(xy_movie)-1), desc='XY rotation'):
             s, e, p = phase_cross_correlation(warp_polar(xy_movie[t], radius = radius_xy),
-                                              warp_polar(xy_movie[t+1], radius = radius_xy), 
+                                              warp_polar(xy_movie[t+1], radius = radius_xy),
                                               normalization=None)
             shifts_xy.append(s)
         shifts_a_xy = np.cumsum(np.array(shifts_xy), axis = 0)
@@ -589,13 +587,13 @@ def get_rotation_alpha(data, ref_channel, projection_type='average', reference_m
     else:
         for t in tqdm(range(1, len(xy_movie)), desc='XY rotation'):
             s, e, p = phase_cross_correlation(warp_polar(xy_movie[0], radius = radius_xy),
-                                              warp_polar(xy_movie[t], radius = radius_xy), 
+                                              warp_polar(xy_movie[t], radius = radius_xy),
                                               normalization=None)
             shifts_xy.append(s)
         shifts_a_xy = np.array(shifts_xy).tolist()
         shifts_a_xy.insert(0,[0,0])
     shifts_a_xy = np.asarray(shifts_a_xy)
-    
+
     return shifts_a_xy[:,0]
 
 
@@ -604,13 +602,13 @@ def get_rotation_beta(data, ref_channel, projection_type='average', reference_mo
     # Rechunk to ensure T dimension is fully loaded
     data_ref = get_reference_data(data, ref_channel, normalize_channels)
     data_ref = data_ref.rechunk({0: -1, 1: 'auto', 2: 'auto', 3: 'auto'})
-    
+
     # Get rotation in ZX plane (projecting over Y)
     zx_movie = np.array(apply_projection(da.swapaxes(data_ref, 2, 1), axis=1, projection_type=projection_type))
     radius_zx = int(min(da.shape(data)[2], da.shape(data)[4])/2)
 
     print(f'Determining rotation in ZX plane (projection: {projection_type}, reference: {reference_mode})')
-    
+
     # ZX rotation detection
     shifts_zx = []
     if reference_mode == 'relative':
@@ -631,7 +629,7 @@ def get_rotation_beta(data, ref_channel, projection_type='average', reference_mo
         shifts_a_zx = np.array(shifts_zx).tolist()
         shifts_a_zx.insert(0,[0,0])
     shifts_a_zx = np.asarray(shifts_a_zx)
-    
+
     return shifts_a_zx[:,0]
 
 
@@ -640,13 +638,13 @@ def get_rotation_gamma(data, ref_channel, projection_type='average', reference_m
     # Rechunk to ensure T dimension is fully loaded
     data_ref = get_reference_data(data, ref_channel, normalize_channels)
     data_ref = data_ref.rechunk({0: -1, 1: 'auto', 2: 'auto', 3: 'auto'})
-    
+
     # Get rotation in ZY plane (projecting over X)
     zy_movie = np.array(apply_projection(da.swapaxes(data_ref, 3, 1), axis=1, projection_type=projection_type))
     radius_zy = int(min(da.shape(data)[2], da.shape(data)[3])/2)
 
     print(f'Determining rotation in ZY plane (projection: {projection_type}, reference: {reference_mode})')
-    
+
     # ZY rotation detection
     shifts_zy = []
     if reference_mode == 'relative':
@@ -667,7 +665,7 @@ def get_rotation_gamma(data, ref_channel, projection_type='average', reference_m
         shifts_a_zy = np.array(shifts_zy).tolist()
         shifts_a_zy.insert(0,[0,0])
     shifts_a_zy = np.asarray(shifts_a_zy)
-    
+
     return shifts_a_zy[:,0]
 
 
@@ -677,28 +675,28 @@ def get_rotation(data, ref_channel, projection_type='average', reference_mode='r
     alpha_xy = get_rotation_alpha(data, ref_channel, projection_type, reference_mode, normalize_channels)
     beta_zx = get_rotation_beta(data, ref_channel, projection_type, reference_mode, normalize_channels)
     gamma_zy = get_rotation_gamma(data, ref_channel, projection_type, reference_mode, normalize_channels)
-    
+
     # Plot results for all three planes
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-    
+
     axes[0].set_title('XY-Rotation (alpha)')
     axes[0].plot(alpha_xy, label = 'alpha')
     axes[0].legend()
     axes[0].set_xlabel('Timesteps')
     axes[0].set_ylabel('Rotation in degree')
-    
+
     axes[1].set_title('ZX-Rotation (beta)')
     axes[1].plot(beta_zx, label = 'beta')
     axes[1].legend()
     axes[1].set_xlabel('Timesteps')
     axes[1].set_ylabel('Rotation in degree')
-    
+
     axes[2].set_title('ZY-Rotation (gamma)')
     axes[2].plot(gamma_zy, label = 'gamma')
     axes[2].legend()
     axes[2].set_xlabel('Timesteps')
     axes[2].set_ylabel('Rotation in degree')
-    
+
     plt.tight_layout()
     plt.savefig('Rotation-Drift.svg')
     plt.clf()
@@ -709,7 +707,7 @@ def get_rotation(data, ref_channel, projection_type='average', reference_mode='r
 def apply_alpha_drift(_data, alpha_xy):
     # Applies XY plane rotation (around Z axis) to entire z-stacks
     # alpha_xy is array of rotation angles for each timepoint
-    
+
     # Swap axes to iterate over time which aligns with chunks
     _data = da.swapaxes(_data, 0,1)
 
@@ -724,14 +722,14 @@ def apply_alpha_drift(_data, alpha_xy):
     _data_out = da.swapaxes(_data_out, 0,1)
 
     print('XY rotation (alpha) has been scheduled.')
-    
+
     return _data_out
 
 
 def apply_beta_drift(_data, beta_zx):
     # Applies ZX plane rotation (around Y axis) to entire z-stacks
     # beta_zx is array of rotation angles for each timepoint
-    
+
     # Swap axes to iterate over time which aligns with chunks
     _data = da.swapaxes(_data, 0,1)
 
@@ -746,14 +744,14 @@ def apply_beta_drift(_data, beta_zx):
     _data_out = da.swapaxes(_data_out, 0,1)
 
     print('ZX rotation (beta) has been scheduled.')
-    
+
     return _data_out
 
 
 def apply_gamma_drift(_data, gamma_zy):
     # Applies ZY plane rotation (around X axis) to entire z-stacks
     # gamma_zy is array of rotation angles for each timepoint
-    
+
     # Swap axes to iterate over time which aligns with chunks
     _data = da.swapaxes(_data, 0,1)
 
@@ -768,10 +766,10 @@ def apply_gamma_drift(_data, gamma_zy):
     _data_out = da.swapaxes(_data_out, 0,1)
 
     print('ZY rotation (gamma) has been scheduled.')
-    
+
     return _data_out
 
-def write_tmp_data_to_disk(_path, _file, _new_shape=None): 
+def write_tmp_data_to_disk(_path, _file, _new_shape=None):
     """Write temporary data to Zarr format with optimized chunking.
     
     Uses (1, 1, Z, Y, X) chunking for efficient per-channel access.
@@ -791,29 +789,29 @@ def write_tmp_data_to_disk(_path, _file, _new_shape=None):
     dask array backed by Zarr store
     """
     print(f'Saving intermediate results to Zarr format at {_path}')
-    
+
     # Determine optimal chunking: (C=1, T=1, Z=full, Y=full, X=full)
     if _new_shape is None:
         shape = _file.shape
         # For CTZYX format: chunk by (1, 1, full_Z, full_Y, full_X)
         _new_shape = (1, 1, shape[2], shape[3], shape[4])
-    
+
     # Rechunk before saving for optimal write performance
     _file_rechunked = _file.rechunk(_new_shape)
-    
+
     # Save to Zarr with progress bar
     with ProgressBar():
         _file_rechunked.to_zarr(_path, overwrite=True)
-    
+
     # Reload as dask array backed by Zarr
     zarr_array = zarr.open(_path, mode='r+')
     _file_reloaded = da.from_zarr(zarr_array).rechunk(_new_shape)
-    
+
     print(f'  Data shape: {_file_reloaded.shape}, chunks: {_file_reloaded.chunks}')
     return _file_reloaded
 
 
-def read_tmp_data(_path, _new_shape=None): 
+def read_tmp_data(_path, _new_shape=None):
     """Read temporary data from Zarr format.
     
     Parameters:
@@ -830,10 +828,10 @@ def read_tmp_data(_path, _new_shape=None):
     print(f'Loading data from Zarr format at {_path}')
     zarr_array = zarr.open(_path, mode='r+')
     _file_loaded = da.from_zarr(zarr_array)
-    
+
     if _new_shape is not None:
         _file_loaded = _file_loaded.rechunk(_new_shape)
-    
+
     print(f'  Data shape: {_file_loaded.shape}, chunks: {_file_loaded.chunks}')
     return _file_loaded
 
@@ -843,4 +841,4 @@ def read_tmp_data(_path, _new_shape=None):
 # - This allows independent, efficient access to individual channels and timepoints
 # - Built-in compression (Blosc/LZ4) reduces disk usage by ~2-3x
 # - Better random access patterns compared to NPY stacks
-# - Particularly efficient for multi-channel images 
+# - Particularly efficient for multi-channel images
